@@ -236,7 +236,6 @@ def main():
 
     ## training loop
     for epoch in range(start_epoch, args.train.max_epoch):
-        lr_scheduler.step()
         for ts in train_sampler:
             ts.set_epoch(epoch)
         # train for one epoch
@@ -261,7 +260,9 @@ def main():
                                  outfeat_fn="{}/checkpoints/ckpt_epoch_{}_{}.bin".format(
                                  args.save_path, epoch + 1, tb),
                                  benchmark=tb)
-                tb_logger.add_scalar(tb, res, start_epoch)
+                tb_logger.add_scalar(tb, res, epoch + 1)
+
+        lr_scheduler.step()
 
 
 def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count):
