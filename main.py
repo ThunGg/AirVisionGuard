@@ -1,7 +1,3 @@
-import multiprocessing as mp
-if mp.get_start_method(allow_none=True) != 'spawn':
-    mp.set_start_method('spawn', force=True)
-
 import argparse
 import os
 import time
@@ -9,8 +5,6 @@ import logging
 from datetime import datetime
 import numpy as np
 import yaml
-import pdb
-
 import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
@@ -18,8 +12,6 @@ import torch.optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from tensorboardX import SummaryWriter
-torch.multiprocessing.set_sharing_strategy('file_system')
-
 import models
 from datasets import GivenSizeSampler, BinDataset, FileListLabeledDataset, FileListDataset
 from utils import AverageMeter, load_state, save_state, log, normalize, bin_loader
@@ -43,6 +35,10 @@ parser.add_argument('--extract', action='store_true')
 parser.add_argument('--local_rank', default=0, type=int, help='node rank for distributed training')
 
 def main():
+    import multiprocessing as mp
+    if mp.get_start_method(allow_none=True) != 'spawn':
+        mp.set_start_method('spawn', force=True)
+    torch.multiprocessing.set_sharing_strategy('file_system')
 
     ## config
     global args

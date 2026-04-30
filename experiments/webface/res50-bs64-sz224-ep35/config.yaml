@@ -1,4 +1,4 @@
-workers: 4
+workers: 2
 gpus: '0,1' # split using ","
 memcached: False
 memcached_client: ""

@@ -253,7 +253,8 @@ def build_unlabeled_dataset(filelist, prefix):
 
 class FileListLabeledDataset(Dataset):
     def __init__(self, filelist, prefix, transform=None, memcached=False, memcached_client=''):
-        self.img_lst, self.lb_lst = build_labeled_dataset(filelist, prefix)
+        self.img_lst, self.lb_lst = build_labeled_dataset(filelist, '') # Don't join prefix here
+        self.prefix = prefix
         self.num = len(self.img_lst)
         self.transform = transform
         self.num_class = max(self.lb_lst) + 1
@@ -274,7 +275,7 @@ class FileListLabeledDataset(Dataset):
     def _read(self, idx=None):
         if idx is None:
             idx = np.random.randint(self.num)
-        fn = self.img_lst[idx]
+        fn = os.path.join(self.prefix, self.img_lst[idx])
         lb = self.lb_lst[idx]
         try:
             if self.memcached:
@@ -299,7 +300,8 @@ class FileListLabeledDataset(Dataset):
 
 class FileListDataset(Dataset):
     def __init__(self, filelist, prefix, transform=None, memcached=False, memcached_client=''):
-        self.img_lst = build_unlabeled_dataset(filelist, prefix)
+        self.img_lst = build_unlabeled_dataset(filelist, '') # Don't join prefix here
+        self.prefix = prefix
         self.num = len(self.img_lst)
         self.transform = transform
         self.initialized = False
@@ -319,7 +321,7 @@ class FileListDataset(Dataset):
     def _read(self, idx=None):
         if idx is None:
             idx = np.random.randint(self.num)
-        fn = self.img_lst[idx]
+        fn = os.path.join(self.prefix, self.img_lst[idx])
         try:
             #img = pil_loader(open(fn, 'rb').read())
             if self.memcached:
