@@ -179,7 +179,7 @@ def main():
             sequential=True, silent=True) for td in test_dataset]
         test_loader = [DataLoader(
             td, batch_size=args.test.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=False, sampler=ts)
+            num_workers=args.workers, pin_memory=True, sampler=ts)
             for td, ts in zip(test_dataset, test_sampler)]
 
     if args.extract: # feature extraction
@@ -198,7 +198,7 @@ def main():
             extract_dataset, total_size=int(np.ceil(len(extract_dataset) / float(args.extract_info.batch_size)) * args.extract_info.batch_size), sequential=True)
         extract_loader = DataLoader(
             extract_dataset, batch_size=args.extract_info.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=False, sampler=extract_sampler)
+            num_workers=args.workers, pin_memory=True, sampler=extract_sampler)
 
 
     ## create model
@@ -282,12 +282,12 @@ def main():
 
     ## initial validate
     if args.val.flag:
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         validate(val_loader, model, start_epoch, args.train.loss_weight, len(train_loader[0]), tb_logger)
 
     ## initial evaluate
     if args.test.flag and args.test.initial_test:
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         log("*************** evaluation epoch [{}] ***************".format(start_epoch))
         for tb, tl, td in zip(args.test.benchmark, test_loader, test_dataset):
             res = evaluation(tl, model, num=len(td),
@@ -316,11 +316,11 @@ def main():
 
         # validate
         if args.val.flag:
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             validate(val_loader, model, epoch, args.train.loss_weight, len(train_loader[0]), tb_logger, count)
         # online evaluate
         if args.test.flag and ((epoch + 1) % args.test.interval == 0 or epoch + 1 == args.train.max_epoch):
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             log("*************** evaluation epoch [{}] ***************".format(epoch + 1))
             for tb, tl, td in zip(args.test.benchmark, test_loader, test_dataset):
                 res = evaluation(tl, model, num=len(td),
@@ -517,12 +517,10 @@ def evaluation(test_loader, model, num, outfeat_fn, benchmark):
             all_features = [torch.zeros_like(local_features) for _ in range(args.world_size)]
             dist.all_gather(all_features, local_features)
             
-            # Interleave to restore original order (round-robin distribution in GivenSizeSampler)
-            combined = []
-            for i in range(local_features.size(0)):
-                for rank_features in all_features:
-                    combined.append(rank_features[i])
-            features = torch.stack(combined).cpu().numpy()[:num, :]
+            # Efficiently interleave to restore original order (round-robin distribution in GivenSizeSampler)
+            all_features_t = torch.stack(all_features, dim=0) # (world_size, local_num, feat_dim)
+            all_features_t = all_features_t.transpose(0, 1) # (local_num, world_size, feat_dim)
+            features = all_features_t.reshape(-1, local_features.size(1)).cpu().numpy()[:num, :]
 
         # Only rank 0 writes to file
         if args.rank == 0:
