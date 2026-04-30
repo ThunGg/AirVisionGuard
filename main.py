@@ -98,12 +98,9 @@ def main():
     ## mkdir
     if not hasattr(args, 'save_path'):
         args.save_path = os.path.dirname(args.config)
-    if not os.path.isdir('{}/checkpoints'.format(args.save_path)):
-        os.makedirs('{}/checkpoints'.format(args.save_path))
-    if not os.path.isdir('{}/logs'.format(args.save_path)):
-        os.makedirs('{}/logs'.format(args.save_path))
-    if not os.path.isdir('{}/events'.format(args.save_path)):
-        os.makedirs('{}/events'.format(args.save_path))
+    os.makedirs('{}/checkpoints'.format(args.save_path), exist_ok=True)
+    os.makedirs('{}/logs'.format(args.save_path), exist_ok=True)
+    os.makedirs('{}/events'.format(args.save_path), exist_ok=True)
 
     ## create dataset
     if not (args.extract or args.evaluate): # train + val
