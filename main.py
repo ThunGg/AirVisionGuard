@@ -47,7 +47,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.config) as f:
-        config = yaml.load(f)
+        config = yaml.safe_load(f)
 
     for k,v in config.items():    
         if isinstance(v, dict):
