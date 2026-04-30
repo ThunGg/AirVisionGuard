@@ -29,6 +29,7 @@ class ArgObj(object):
 parser = argparse.ArgumentParser(description='Multi-Task Face Recognition Training')
 parser.add_argument('--config', type=str, required=True)
 parser.add_argument('--load-path', default='', type=str)
+parser.add_argument('--save-path', default='', type=str)
 parser.add_argument('--resume', action='store_true')
 parser.add_argument('--evaluate', action='store_true')
 parser.add_argument('--extract', action='store_true')
@@ -120,7 +121,7 @@ def main():
         #assert(num_tasks == len(args.val.data_meta))
 
     ## mkdir
-    if not hasattr(args, 'save_path'):
+    if not args.save_path:
         args.save_path = os.path.dirname(args.config)
     os.makedirs('{}/checkpoints'.format(args.save_path), exist_ok=True)
     os.makedirs('{}/logs'.format(args.save_path), exist_ok=True)
