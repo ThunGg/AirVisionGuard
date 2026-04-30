@@ -24,6 +24,7 @@ import models
 from datasets import GivenSizeSampler, BinDataset, FileListLabeledDataset, FileListDataset
 from utils import AverageMeter, load_state, save_state, log, normalize, bin_loader
 from evaluation import evaluate, test_megaface
+import torch.distributed as dist
 
 model_names = sorted(name for name in models.backbones.__dict__
     if name.islower() and not name.startswith("__")
@@ -39,6 +40,7 @@ parser.add_argument('--load-path', default='', type=str)
 parser.add_argument('--resume', action='store_true')
 parser.add_argument('--evaluate', action='store_true')
 parser.add_argument('--extract', action='store_true')
+parser.add_argument('--local_rank', default=0, type=int, help='node rank for distributed training')
 
 def main():
 
@@ -58,6 +60,23 @@ def main():
         else:
             setattr(args, k, v)
     args.ngpu = len(args.gpus.split(','))
+    
+    # DDP Initialization
+    args.distributed = False
+    if 'WORLD_SIZE' in os.environ:
+        args.distributed = int(os.environ['WORLD_SIZE']) > 1
+        
+    if args.distributed:
+        args.gpu = args.local_rank
+        torch.cuda.set_device(args.gpu)
+        dist.init_process_group(backend='nccl', init_method='env://')
+        args.world_size = dist.get_world_size()
+        args.rank = dist.get_rank()
+        log("Distributed training initialized: rank {}/{}".format(args.rank, args.world_size))
+    else:
+        args.rank = 0
+        args.world_size = 1
+        args.gpu = 0
 
     ## asserts
     assert args.model.backbone in model_names, "available backbone names: {}".format(model_names)
@@ -84,8 +103,11 @@ def main():
 
     ## create dataset
     if not (args.extract or args.evaluate): # train + val
-        for i in range(num_tasks):
-            args.train.batch_size[i] *= args.ngpu
+        # In DDP, batch_size is per GPU. In DP, it's global.
+        # We'll stick to per-GPU batch size for DDP and multiply for DP if needed.
+        if not args.distributed:
+            for i in range(num_tasks):
+                args.train.batch_size[i] *= args.ngpu
 
         #train_dataset = [FaceDataset(args, idx, 'train') for idx in range(num_tasks)]
         train_dataset = [FileListLabeledDataset(
@@ -102,12 +124,14 @@ def main():
         train_sampler = [GivenSizeSampler(td, total_size=train_longest_size * bs, rand_seed=args.train.rand_seed) for td, bs in zip(train_dataset, args.train.batch_size)]
         train_loader = [DataLoader(
             train_dataset[k], batch_size=args.train.batch_size[k], shuffle=False,
-            num_workers=args.workers, pin_memory=False, sampler=train_sampler[k]) for k in range(num_tasks)]
+            num_workers=args.workers, pin_memory=True, sampler=train_sampler[k],
+            persistent_workers=args.workers > 0) for k in range(num_tasks)]
         assert(all([len(train_loader[k]) == len(train_loader[0]) for k in range(num_tasks)]))
 
         if args.val.flag:
-            for i in range(num_tasks):
-                args.val.batch_size[i] *= args.ngpu
+            if not args.distributed:
+                for i in range(num_tasks):
+                    args.val.batch_size[i] *= args.ngpu
     
             #val_dataset = [FaceDataset(args, idx, 'val') for idx in range(num_tasks)]
             val_dataset = [FileListLabeledDataset(
@@ -123,7 +147,8 @@ def main():
             val_sampler = [GivenSizeSampler(vd, total_size=val_longest_size * bs, sequential=True) for vd, bs in zip(val_dataset, args.val.batch_size)]
             val_loader = [DataLoader(
                 val_dataset[k], batch_size=args.val.batch_size[k], shuffle=False,
-                num_workers=args.workers, pin_memory=False, sampler=val_sampler[k]) for k in range(num_tasks)]
+                num_workers=args.workers, pin_memory=True, sampler=val_sampler[k],
+                persistent_workers=args.workers > 0) for k in range(num_tasks)]
             assert(all([len(val_loader[k]) == len(val_loader[0]) for k in range(num_tasks)]))
 
     if args.test.flag or args.evaluate: # online or offline evaluate
@@ -175,9 +200,18 @@ def main():
         args.num_classes = None
     model = models.MultiTaskWithLoss(backbone=args.model.backbone, num_classes=args.num_classes, feature_dim=args.model.feature_dim, spatial_size=args.model.input_size, arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
-    model = nn.DataParallel(model)
-    model.cuda()
+    
+    if args.distributed:
+        model.cuda(args.gpu)
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    else:
+        model = nn.DataParallel(model)
+        model.cuda()
+    
     cudnn.benchmark = True
+    
+    # Initialize AMP scaler
+    scaler = torch.amp.GradScaler("cuda")
 
     ## criterion and optimizer
     optimizer = torch.optim.SGD(model.parameters(), args.train.base_lr,
@@ -214,11 +248,14 @@ def main():
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.train.lr_decay_steps, gamma=args.train.lr_decay_scale, last_epoch=start_epoch-1)
 
     ## logger
-    logging.basicConfig(filename=os.path.join('{}/logs'.format(args.save_path), 'log-{}-{:02d}-{:02d}_{:02d}:{:02d}:{:02d}.txt'.format(
-        datetime.today().year, datetime.today().month, datetime.today().day,
-        datetime.today().hour, datetime.today().minute, datetime.today().second)),
-        level=logging.INFO)
-    tb_logger = SummaryWriter('{}/events'.format(args.save_path))
+    if args.rank == 0:
+        logging.basicConfig(filename=os.path.join('{}/logs'.format(args.save_path), 'log-{}-{:02d}-{:02d}_{:02d}:{:02d}:{:02d}.txt'.format(
+            datetime.today().year, datetime.today().month, datetime.today().day,
+            datetime.today().hour, datetime.today().minute, datetime.today().second)),
+            level=logging.INFO)
+        tb_logger = SummaryWriter('{}/events'.format(args.save_path))
+    else:
+        tb_logger = None
 
     ## initial validate
     if args.val.flag:
@@ -232,22 +269,25 @@ def main():
                              outfeat_fn="{}/checkpoints/ckpt_epoch_{}_{}.bin".format(
                              args.save_path, start_epoch, tb),
                              benchmark=tb)
-            tb_logger.add_scalar(tb, res, start_epoch)
+            if tb_logger:
+                tb_logger.add_scalar(tb, res, start_epoch)
 
     ## training loop
     for epoch in range(start_epoch, args.train.max_epoch):
         for ts in train_sampler:
             ts.set_epoch(epoch)
         # train for one epoch
-        train(train_loader, model, optimizer, epoch, args.train.loss_weight, tb_logger, count)
+        # train for one epoch
+        train(train_loader, model, optimizer, epoch, args.train.loss_weight, tb_logger, count, scaler)
         # save checkpoint
-        save_state({
-            'epoch': epoch + 1,
-            'arch': args.model.backbone,
-            'state_dict': model.state_dict(),
-            'optimizer' : optimizer.state_dict(),
-            'count': count[0]
-        }, args.save_path + "/checkpoints/ckpt_epoch", epoch + 1, is_last=(epoch + 1 == args.train.max_epoch))
+        if args.rank == 0:
+            save_state({
+                'epoch': epoch + 1,
+                'arch': args.model.backbone,
+                'state_dict': model.state_dict(),
+                'optimizer' : optimizer.state_dict(),
+                'count': count[0]
+            }, args.save_path + "/checkpoints/ckpt_epoch", epoch + 1, is_last=(epoch + 1 == args.train.max_epoch))
 
         # validate
         if args.val.flag:
@@ -260,12 +300,13 @@ def main():
                                  outfeat_fn="{}/checkpoints/ckpt_epoch_{}_{}.bin".format(
                                  args.save_path, epoch + 1, tb),
                                  benchmark=tb)
-                tb_logger.add_scalar(tb, res, epoch + 1)
+                if tb_logger:
+                    tb_logger.add_scalar(tb, res, epoch + 1)
 
         lr_scheduler.step()
 
 
-def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count):
+def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, scaler):
     num_tasks = len(train_loader)
     batch_time = AverageMeter(args.train.average_stats)
     data_time = AverageMeter(args.train.average_stats)
@@ -296,26 +337,35 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        input_var = torch.autograd.Variable(input.cuda())
-        target_var = torch.autograd.Variable(target.cuda())
+        input = input.cuda(non_blocking=True)
+        target = target.cuda(non_blocking=True)
 
-        # measure accuracy and record loss
-        loss = model(input_var, target_var, slice_idx)
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        
+        with torch.amp.autocast("cuda"):
+            # measure accuracy and record loss
+            loss = model(input, target, slice_idx)
+            
+            loss_total = 0.
+            for k in range(num_tasks):
+                loss_total = loss_total + loss[k].mean() * loss_weight[k]
+
+        # scale loss and backprop
+        scaler.scale(loss_total).backward()
+        
+        # unscale for gradient clipping
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        
+        scaler.step(optimizer)
+        scaler.update()
 
         for k in range(num_tasks):
             if torch.__version__ >= '1.1.0':
                 losses[k].update(loss[k].mean().item()) 
             else:
                 losses[k].update(loss[k].mean().data[0])
-
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss_total = 0.
-        for k in range(num_tasks):
-            loss_total = loss_total + loss[k].mean() * loss_weight[k]
-        loss_total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -338,9 +388,10 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count):
                        k, loss_weight[k], loss=losses[k]))
 
         # tensorboard logger
-        for k in range(num_tasks):
-            tb_logger.add_scalar('train_loss_{}'.format(k), losses[k].val, count[0])
-        tb_logger.add_scalar('lr', optimizer.param_groups[0]['lr'], count[0])
+        if tb_logger:
+            for k in range(num_tasks):
+                tb_logger.add_scalar('train_loss_{}'.format(k), losses[k].val, count[0])
+            tb_logger.add_scalar('lr', optimizer.param_groups[0]['lr'], count[0])
 
         count[0] += 1
 

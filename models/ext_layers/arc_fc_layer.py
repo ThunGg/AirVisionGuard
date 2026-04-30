@@ -40,20 +40,29 @@ class ArcFullyConnected(Module):
 
     def forward(self, embed, label):
         n_weight = F.normalize(self.weight, p=2, dim=1)
-        n_embed = F.normalize(embed, p=2, dim=1)*self.s
+        n_embed = F.normalize(embed, p=2, dim=1) * self.s
         out = F.linear(n_embed, n_weight)
+        
+        # Get target class scores
         score = out.gather(1, label.view(-1, 1))
         cos_y = score / self.s
         sin_y = torch.sqrt((1 - cos_y**2).clamp(min=1e-9))
-        arc_score = self.s * (cos_y*math.cos(self.m) - sin_y*math.sin(self.m))
+        
+        # Apply margin
+        arc_score = self.s * (cos_y * math.cos(self.m) - sin_y * math.sin(self.m))
+        
         if self.is_pw:
             if not self.is_hard:
                 arc_score = where(score > 0, arc_score, score)
             else:
-                mm = math.sin(math.pi - self.m)*self.m # actually it is sin(m)*m
-                th = math.cos(math.pi - self.m) # actually it is -cos(m)
-                arc_score = where((score-th) > 0, arc_score, score-self.s*mm)
-        one_hot = Variable(torch.cuda.FloatTensor(out.shape).fill_(0))
-        out += (arc_score - score) * one_hot.scatter_(1, label.view(-1, 1), 1)
+                mm = math.sin(self.m) * self.m 
+                th = math.cos(math.pi - self.m) 
+                arc_score = where((score - th) > 0, arc_score, score - self.s * mm)
+        
+        # Update scores with margin for target classes
+        one_hot = torch.zeros_like(out)
+        one_hot.scatter_(1, label.view(-1, 1), 1.0)
+        out = out + (arc_score - score) * one_hot
+        
         return out
 

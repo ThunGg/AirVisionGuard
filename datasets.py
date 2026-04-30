@@ -147,15 +147,28 @@ def pil_loader(img_str):
 
 class GivenSizeSampler(Sampler):
     '''
-    Sampler with given total size
+    Sampler with given total size, supporting distributed training
     '''
     def __init__(self, dataset, total_size=None, rand_seed=None, sequential=False, silent=False):
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            self.num_replicas = dist.get_world_size()
+            self.rank = dist.get_rank()
+        else:
+            self.num_replicas = 1
+            self.rank = 0
+            
         self.rand_seed = rand_seed if rand_seed is not None else 0
         self.dataset = dataset
         self.epoch = 0
         self.sequential = sequential
         self.silent = silent
-        self.total_size = total_size if total_size is not None else len(self.dataset)
+        
+        # Global total size
+        global_total_size = total_size if total_size is not None else len(self.dataset)
+        # Each replica should have the same number of samples
+        self.num_samples = int(np.ceil(global_total_size * 1.0 / self.num_replicas))
+        self.total_size = self.num_samples * self.num_replicas # Adjusted global size
 
     def __iter__(self):
         # deterministically shuffle based on epoch
@@ -169,20 +182,24 @@ class GivenSizeSampler(Sampler):
 
         # add extra samples to meet self.total_size
         extra = self.total_size - len(origin_indices)
-        if not self.silent:
-            print('Origin Size: {}\tAligned Size: {}'.format(len(origin_indices), self.total_size))
+        if not self.silent and self.rank == 0:
+            print('Origin Size: {}\tAligned Global Size: {}\tPer-rank Size: {}'.format(len(origin_indices), self.total_size, self.num_samples))
+        
         if extra < 0:
             indices = indices[:self.total_size]
         while extra > 0:
             intake = min(len(origin_indices), extra)
             indices += origin_indices[:intake]
             extra -= intake
-        assert len(indices) == self.total_size, "{} vs {}".format(len(indices), self.total_size)
+        
+        # slice for the current rank
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+        assert len(indices) == self.num_samples, "{} vs {}".format(len(indices), self.num_samples)
 
         return iter(indices)
 
     def __len__(self):
-        return self.total_size
+        return self.num_samples
 
     def set_epoch(self, epoch):
         self.epoch = epoch

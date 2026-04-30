@@ -62,8 +62,14 @@ def load_state(path, model, optimizer=None):
         log("=> no checkpoint found at '{}'".format(path))
 
 def log(string):
-    print(string)
-    logging.info(string)
+    import torch.distributed as dist
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:
+            print(string)
+            logging.info(string)
+    else:
+        print(string)
+        logging.info(string)
 
 
 def bin_loader(path):
