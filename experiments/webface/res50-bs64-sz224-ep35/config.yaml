@@ -15,9 +15,8 @@ train:
     rand_seed: 0
     batch_size: [64]
     loss_weight: [1.0]
-    base_lr: 0.3
-    lr_decay_scale: 0.1
-    lr_decay_steps: [20, 30]
+    base_lr: 0.1
+    min_lr: 0.0001
     max_epoch: 35
     warmup_epochs: 5
     warmup_start_factor: 0.1

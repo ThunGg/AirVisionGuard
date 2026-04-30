@@ -251,24 +251,32 @@ def main():
 
     ## lr scheduler
     steps_per_epoch = len(train_loader[0])
-    main_milestones = [step * steps_per_epoch for step in args.train.lr_decay_steps]
-    main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, main_milestones, 
-        gamma=args.train.lr_decay_scale, 
-        last_epoch=count[0]-1
-    )
-
     warmup_epochs = getattr(args.train, 'warmup_epochs', 5)
     warmup_steps = warmup_epochs * steps_per_epoch
     warmup_start_factor = getattr(args.train, 'warmup_start_factor', 0.1)
+    
+    total_steps = args.train.max_epoch * steps_per_epoch
+    min_lr = getattr(args.train, 'min_lr', 0)
+
     if warmup_steps > 0:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=warmup_start_factor, end_factor=1.0,
-            total_iters=warmup_steps, last_epoch=count[0]-1
+            total_iters=warmup_steps
         )
-        lr_scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup_scheduler, main_lr_scheduler])
+        main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=total_steps - warmup_steps,
+            eta_min=min_lr
+        )
+        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_scheduler, main_lr_scheduler],
+            milestones=[warmup_steps], last_epoch=count[0]-1
+        )
     else:
-        lr_scheduler = main_lr_scheduler
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=total_steps,
+            eta_min=min_lr,
+            last_epoch=count[0]-1
+        )
 
     ## logger
     if args.rank == 0:
