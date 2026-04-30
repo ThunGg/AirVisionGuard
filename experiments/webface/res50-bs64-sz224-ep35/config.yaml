@@ -23,8 +23,8 @@ train:
     warmup_start_factor: 0.1
     momentum: 0.9
     weight_decay: 0.0001
-    print_freq: 20
-    average_stats: 100
+    print_freq: 500
+    average_stats: 1000
     data_root:
         - 'data/webface/images'
     data_list:
