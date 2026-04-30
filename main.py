@@ -33,6 +33,7 @@ parser.add_argument('--resume', action='store_true')
 parser.add_argument('--evaluate', action='store_true')
 parser.add_argument('--extract', action='store_true')
 parser.add_argument('--local_rank', default=0, type=int, help='node rank for distributed training')
+parser.add_argument('--demo', action='store_true', help='run in demo mode (fast verification)')
 
 def main():
     import multiprocessing as mp
@@ -56,6 +57,13 @@ def main():
         else:
             setattr(args, k, v)
     args.ngpu = len(args.gpus.split(','))
+    
+    if args.demo:
+        log("DEMO MODE ENABLED: Limiting training and evaluation for fast verification.")
+        args.train.max_epoch = 1
+        args.train.print_freq = 1
+        args.test.benchmark = ['lfw']
+        args.test.interval = 1
     
     # DDP Initialization
     args.distributed = False
@@ -339,6 +347,9 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
 
     end = time.time()
     for i, all_in in enumerate(zip(*tuple(train_loader))):
+        if args.demo and i >= 10:
+            log("Demo mode: stopping epoch early at iteration {}".format(i))
+            break
         input, target = zip(*[all_in[k] for k in range(num_tasks)])
         
         if args.distributed:
