@@ -2,6 +2,8 @@ import os
 import argparse
 import pickle
 import numpy as np
+if not hasattr(np, 'bool'):
+    np.bool = bool
 import mxnet as mx
 import cv2
 from tqdm import tqdm
