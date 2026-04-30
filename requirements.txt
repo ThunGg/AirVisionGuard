@@ -1,0 +1,10 @@
+torch
+torchvision
+numpy<2
+mxnet==1.9.1
+opencv-python
+Pillow
+scikit-learn
+PyYAML
+tqdm
+matplotlib

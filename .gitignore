@@ -1,0 +1,17 @@
+*.swp
+*.pyc
+__pycache__
+*.tar
+checkpoint*
+images*
+logs*
+event*
+*.bin
+data
+old
+*hide
+.ipynb_checkpoints*
+tensorboard_env.sh
+source.sh
+TODO
+experiments/**/*rep
