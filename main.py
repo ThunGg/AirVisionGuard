@@ -34,6 +34,7 @@ parser.add_argument('--evaluate', action='store_true')
 parser.add_argument('--extract', action='store_true')
 parser.add_argument('--local_rank', default=0, type=int, help='node rank for distributed training')
 parser.add_argument('--demo', action='store_true', help='run in demo mode (fast verification)')
+parser.add_argument('opts', help='Modify config options using the command-line', default=None, nargs=argparse.REMAINDER)
 
 def main():
     import multiprocessing as mp
@@ -48,12 +49,31 @@ def main():
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    for k,v in config.items():    
+    if args.opts:
+        for i in range(0, len(args.opts), 2):
+            if i + 1 >= len(args.opts):
+                log("Warning: odd number of options provided, ignoring the last one: {}".format(args.opts[i]))
+                break
+            key = args.opts[i]
+            val = args.opts[i+1]
+            keys = key.split('.')
+            d = config
+            for k in keys[:-1]:
+                d = d.setdefault(k, {})
+            d[keys[-1]] = yaml.safe_load(val)
+
+    def dict_to_argobj(d):
+        obj = ArgObj()
+        for k, v in d.items():
+            if isinstance(v, dict):
+                setattr(obj, k, dict_to_argobj(v))
+            else:
+                setattr(obj, k, v)
+        return obj
+
+    for k, v in config.items():
         if isinstance(v, dict):
-            argobj = ArgObj()
-            setattr(args, k, argobj)
-            for kk,vv in v.items():
-                setattr(argobj, kk, vv)
+            setattr(args, k, dict_to_argobj(v))
         else:
             setattr(args, k, v)
     args.ngpu = len(args.gpus.split(','))
