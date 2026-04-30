@@ -149,7 +149,8 @@ def main():
             assert(all([len(val_loader[k]) == len(val_loader[0]) for k in range(num_tasks)]))
 
     if args.test.flag or args.evaluate: # online or offline evaluate
-        args.test.batch_size *= args.ngpu
+        if not args.distributed:
+            args.test.batch_size *= args.ngpu
         test_dataset = []
         for tb in args.test.benchmark:
             if tb == 'megaface':
@@ -174,7 +175,8 @@ def main():
             for td, ts in zip(test_dataset, test_sampler)]
 
     if args.extract: # feature extraction
-        args.extract_info.batch_size *= args.ngpu
+        if not args.distributed:
+            args.extract_info.batch_size *= args.ngpu
 #        extract_dataset = FaceDataset(args, 0, 'extract')
         extract_dataset = FileListDataset(
             args.extract_info.data_list, args.extract_info.data_root,
@@ -272,10 +274,12 @@ def main():
 
     ## initial validate
     if args.val.flag:
+        torch.cuda.empty_cache()
         validate(val_loader, model, start_epoch, args.train.loss_weight, len(train_loader[0]), tb_logger)
 
     ## initial evaluate
     if args.test.flag and args.test.initial_test:
+        torch.cuda.empty_cache()
         log("*************** evaluation epoch [{}] ***************".format(start_epoch))
         for tb, tl, td in zip(args.test.benchmark, test_loader, test_dataset):
             res = evaluation(tl, model, num=len(td),
@@ -304,9 +308,11 @@ def main():
 
         # validate
         if args.val.flag:
+            torch.cuda.empty_cache()
             validate(val_loader, model, epoch, args.train.loss_weight, len(train_loader[0]), tb_logger, count)
         # online evaluate
         if args.test.flag and ((epoch + 1) % args.test.interval == 0 or epoch + 1 == args.train.max_epoch):
+            torch.cuda.empty_cache()
             log("*************** evaluation epoch [{}] ***************".format(epoch + 1))
             for tb, tl, td in zip(args.test.benchmark, test_loader, test_dataset):
                 res = evaluation(tl, model, num=len(td),
@@ -430,24 +436,21 @@ def validate(val_loader, model, criterion, epoch, loss_weight, train_len, tb_log
     # switch to evaluate mode
     model.eval()
 
-    start = time.time()
-    for i, all_in in enumerate(zip(*tuple(val_loader))):
-        input, target = zip(*[all_in[k] for k in range(num_tasks)])
+    with torch.no_grad():
+        for i, all_in in enumerate(zip(*tuple(val_loader))):
+            input, target = zip(*[all_in[k] for k in range(num_tasks)])
 
-        slice_pt = 0
-        slice_idx = [0]
-        for l in [p.size(0) for p in input]:
-            slice_pt += l
-            slice_idx.append(slice_pt)
+            slice_pt = 0
+            slice_idx = [0]
+            for l in [p.size(0) for p in input]:
+                slice_pt += l
+                slice_idx.append(slice_pt)
 
-        input = torch.cat(tuple(input), dim=0)
+            input = torch.cat(tuple(input), dim=0).cuda()
+            target = [tg.cuda() for tg in target]
 
-        target = [tg.cuda() for tg in target]
-        input_var = torch.autograd.Variable(input.cuda(), volatile=True)
-        target_var = [torch.autograd.Variable(tg, volatile=True) for tg in target]
-
-        # measure accuracy and record loss
-        loss = model(input_var, target_var, slice_idx)
+            # measure accuracy and record loss
+            loss = model(input, target, slice_idx)
 
         for k in range(num_tasks):
             if torch.__version__ >= '1.1.0':
@@ -470,13 +473,14 @@ def extract(ext_loader, model, num, output_file, silent=False):
 
     start = time.time()
     end = time.time()
-    for i, input in enumerate(ext_loader):
-        data_time.update(time.time() - end)
-        input_var = torch.autograd.Variable(input.cuda(), volatile=True)
-        output = model(input_var, extract_mode=True)
-        features.append(output.data.cpu().numpy())
-        batch_time.update(time.time() - end)
-        end = time.time()
+    with torch.no_grad():
+        for i, input in enumerate(ext_loader):
+            data_time.update(time.time() - end)
+            input = input.cuda(non_blocking=True)
+            output = model(input, extract_mode=True)
+            features.append(output.detach().cpu().numpy())
+            batch_time.update(time.time() - end)
+            end = time.time()
 
         if i % args.train.print_freq == 0 and not silent:
             log("Extracting: {0}/{1}\t"
@@ -485,17 +489,36 @@ def extract(ext_loader, model, num, output_file, silent=False):
                     i, len(ext_loader), batch_time=batch_time, data_time=data_time))
 
     features = np.concatenate(features, axis=0)[:num, :]
-    features.tofile(output_file)
+    if output_file is not None:
+        features.tofile(output_file)
     if not silent:
         log("Extracting Done. Total time: {}".format(time.time() - start))
     return features
 
 def evaluation(test_loader, model, num, outfeat_fn, benchmark):
-    load_feat = True
+    load_feat = False
     if not os.path.isfile(outfeat_fn) or not load_feat:
-        features = extract(test_loader, model, num, outfeat_fn, silent=True)
+        features = extract(test_loader, model, num, None, silent=True)
+        
+        # Gather features from all ranks in DDP
+        if args.distributed:
+            local_features = torch.from_numpy(features).cuda()
+            all_features = [torch.zeros_like(local_features) for _ in range(args.world_size)]
+            dist.all_gather(all_features, local_features)
+            
+            # Interleave to restore original order (round-robin distribution in GivenSizeSampler)
+            combined = []
+            for i in range(local_features.size(0)):
+                for rank_features in all_features:
+                    combined.append(rank_features[i])
+            features = torch.stack(combined).cpu().numpy()[:num, :]
+
+        # Only rank 0 writes to file
+        if args.rank == 0:
+            features.tofile(outfeat_fn)
     else:
-        print("loading from: {}".format(outfeat_fn))
+        if args.rank == 0:
+            log("loading from: {}".format(outfeat_fn))
         features = np.fromfile(outfeat_fn, dtype=np.float32).reshape(-1, args.model.feature_dim)
 
     if benchmark == "megaface":
