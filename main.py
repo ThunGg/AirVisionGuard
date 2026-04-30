@@ -65,18 +65,22 @@ def main():
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
         args.distributed = int(os.environ['WORLD_SIZE']) > 1
+        # Prioritize LOCAL_RANK environment variable set by torchrun
+        if 'LOCAL_RANK' in os.environ:
+            args.local_rank = int(os.environ['LOCAL_RANK'])
         
-    if args.distributed:
+    if not args.distributed:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
+        args.rank = 0
+        args.world_size = 1
+        args.gpu = 0
+    else:
         args.gpu = args.local_rank
         torch.cuda.set_device(args.gpu)
         dist.init_process_group(backend='nccl', init_method='env://')
         args.world_size = dist.get_world_size()
         args.rank = dist.get_rank()
         log("Distributed training initialized: rank {}/{}".format(args.rank, args.world_size))
-    else:
-        args.rank = 0
-        args.world_size = 1
-        args.gpu = 0
 
     ## asserts
     assert args.model.backbone in model_names, "available backbone names: {}".format(model_names)
@@ -199,7 +203,6 @@ def main():
     if args.evaluate or args.extract:
         args.num_classes = None
     model = models.MultiTaskWithLoss(backbone=args.model.backbone, num_classes=args.num_classes, feature_dim=args.model.feature_dim, spatial_size=args.model.input_size, arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn)
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
     
     if args.distributed:
         model.cuda(args.gpu)
@@ -304,6 +307,9 @@ def main():
                     tb_logger.add_scalar(tb, res, epoch + 1)
 
         lr_scheduler.step()
+
+    if args.distributed:
+        dist.destroy_process_group()
 
 
 def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, scaler):
