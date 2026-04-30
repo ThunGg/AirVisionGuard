@@ -44,7 +44,7 @@ class ArcFullyConnected(Module):
         out = F.linear(n_embed, n_weight)
         score = out.gather(1, label.view(-1, 1))
         cos_y = score / self.s
-        sin_y = torch.sqrt(1 - cos_y**2)
+        sin_y = torch.sqrt((1 - cos_y**2).clamp(min=1e-9))
         arc_score = self.s * (cos_y*math.cos(self.m) - sin_y*math.sin(self.m))
         if self.is_pw:
             if not self.is_hard:

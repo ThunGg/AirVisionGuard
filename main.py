@@ -314,6 +314,7 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count):
         for k in range(num_tasks):
             loss_total = loss_total + loss[k].mean() * loss_weight[k]
         loss_total.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
 
         # measure elapsed time
