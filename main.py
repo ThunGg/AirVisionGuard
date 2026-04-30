@@ -247,18 +247,21 @@ def main():
         return
 
     ## lr scheduler
+    steps_per_epoch = len(train_loader[0])
+    main_milestones = [step * steps_per_epoch for step in args.train.lr_decay_steps]
     main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, args.train.lr_decay_steps, 
+        optimizer, main_milestones, 
         gamma=args.train.lr_decay_scale, 
-        last_epoch=start_epoch-1
+        last_epoch=count[0]-1
     )
 
     warmup_epochs = getattr(args.train, 'warmup_epochs', 5)
+    warmup_steps = warmup_epochs * steps_per_epoch
     warmup_start_factor = getattr(args.train, 'warmup_start_factor', 0.1)
-    if warmup_epochs > 0:
+    if warmup_steps > 0:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=warmup_start_factor, end_factor=1.0,
-            total_iters=warmup_epochs, last_epoch=start_epoch-1
+            total_iters=warmup_steps, last_epoch=count[0]-1
         )
         lr_scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup_scheduler, main_lr_scheduler])
     else:
@@ -295,7 +298,7 @@ def main():
             ts.set_epoch(epoch)
         # train for one epoch
         # train for one epoch
-        train(train_loader, model, optimizer, epoch, args.train.loss_weight, tb_logger, count, scaler)
+        train(train_loader, model, optimizer, epoch, args.train.loss_weight, tb_logger, count, scaler, lr_scheduler)
         # save checkpoint
         if args.rank == 0:
             save_state({
@@ -320,13 +323,13 @@ def main():
                 if tb_logger:
                     tb_logger.add_scalar(tb, res, epoch + 1)
 
-        lr_scheduler.step()
+
 
     if args.distributed:
         dist.destroy_process_group()
 
 
-def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, scaler):
+def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, scaler, lr_scheduler):
     num_tasks = len(train_loader)
     batch_time = AverageMeter(args.train.average_stats)
     data_time = AverageMeter(args.train.average_stats)
@@ -390,6 +393,7 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
         
         scaler.step(optimizer)
         scaler.update()
+        lr_scheduler.step()
 
         for k in range(num_tasks):
             if torch.__version__ >= '1.1.0':
