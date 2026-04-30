@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Zhan"
+  given-names: "Xiaohang"
+- family-names: "Liu"
+  given-names: "Ziwei"
+- family-names: "Yan"
+  given-names: "Junjie"
+- family-names: "Lin"
+  given-names: "Dahua"
+- family-names: "Loy"
+  given-names: "Chen Change"
+title: "Consensus-Driven Propagation in Massive Unlabeled Data for Face Recognition"
+version: 1.0.0
+date-released: 2018-09-01
+url: "http://openaccess.thecvf.com/content_ECCV_2018/papers/Xiaohang_Zhan_Consensus-Driven_Propagation_in_ECCV_2018_paper.pdf"
+preferred-citation:
+  type: conference-paper
+  authors:
+  - family-names: "Zhan"
+    given-names: "Xiaohang"
+  - family-names: "Liu"
+    given-names: "Ziwei"
+  - family-names: "Yan"
+    given-names: "Junjie"
+  - family-names: "Lin"
+    given-names: "Dahua"
+  - family-names: "Loy"
+    given-names: "Chen Change"
+  title: "Consensus-Driven Propagation in Massive Unlabeled Data for Face Recognition"
+  collection-title: "Proceedings of the European Conference on Computer Vision (ECCV)"
+  year: 2018
+  start: 568
+  end: 583
