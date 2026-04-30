@@ -5,3 +5,4 @@ from .resnet import *
 from .ir import *
 from .densenet  import *
 from .nasnet import *
+from .mobilefacenet import *
