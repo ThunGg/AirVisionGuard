@@ -324,21 +324,31 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
     end = time.time()
     for i, all_in in enumerate(zip(*tuple(train_loader))):
         input, target = zip(*[all_in[k] for k in range(num_tasks)])
-        slice_pt = 0
-        slice_idx = [0]
-        for l in [p.size(0) for p in input]:
-            slice_pt += l // args.ngpu
-            slice_idx.append(slice_pt)
+        
+        if args.distributed:
+            slice_pt = 0
+            slice_idx = [0]
+            for l in [p.size(0) for p in input]:
+                slice_pt += l
+                slice_idx.append(slice_pt)
+            input = torch.cat(input, dim=0)
+            target = torch.cat(target, dim=0)
+        else:
+            slice_pt = 0
+            slice_idx = [0]
+            for l in [p.size(0) for p in input]:
+                slice_pt += l // args.ngpu
+                slice_idx.append(slice_pt)
 
-        organized_input = []
-        organized_target = []
-        for ng in range(args.ngpu):
-            for t in range(len(input)):
-                bs = args.train.batch_size[t] // args.ngpu
-                organized_input.append(input[t][ng * bs : (ng + 1) * bs, ...])
-                organized_target.append(target[t][ng * bs : (ng + 1) * bs, ...])
-        input = torch.cat(organized_input, dim=0)
-        target = torch.cat(organized_target, dim=0)
+            organized_input = []
+            organized_target = []
+            for ng in range(args.ngpu):
+                for t in range(len(input)):
+                    bs = input[t].size(0) // args.ngpu
+                    organized_input.append(input[t][ng * bs : (ng + 1) * bs, ...])
+                    organized_target.append(target[t][ng * bs : (ng + 1) * bs, ...])
+            input = torch.cat(organized_input, dim=0)
+            target = torch.cat(organized_target, dim=0)
 
         # measure data loading time
         data_time.update(time.time() - end)
