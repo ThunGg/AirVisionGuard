@@ -19,6 +19,8 @@ train:
     lr_decay_scale: 0.1
     lr_decay_steps: [20, 30]
     max_epoch: 35
+    warmup_epochs: 5
+    warmup_start_factor: 0.1
     momentum: 0.9
     weight_decay: 0.0001
     print_freq: 20

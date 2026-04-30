@@ -246,9 +246,23 @@ def main():
         extract(extract_loader, model, num=len(extract_dataset), output_file="{}_{}.bin".format(args.load_path[:-8], args.extract_info.data_name))
         return
 
-    ######################## train #################
     ## lr scheduler
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.train.lr_decay_steps, gamma=args.train.lr_decay_scale, last_epoch=start_epoch-1)
+    main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        optimizer, args.train.lr_decay_steps, 
+        gamma=args.train.lr_decay_scale, 
+        last_epoch=start_epoch-1
+    )
+
+    warmup_epochs = getattr(args.train, 'warmup_epochs', 5)
+    warmup_start_factor = getattr(args.train, 'warmup_start_factor', 0.1)
+    if warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=warmup_start_factor, end_factor=1.0,
+            total_iters=warmup_epochs, last_epoch=start_epoch-1
+        )
+        lr_scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup_scheduler, main_lr_scheduler])
+    else:
+        lr_scheduler = main_lr_scheduler
 
     ## logger
     if args.rank == 0:
