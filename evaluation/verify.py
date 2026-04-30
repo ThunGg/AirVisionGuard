@@ -50,7 +50,7 @@ def calculate_roc(thresholds, embeddings1, embeddings2, actual_issame, nrof_fold
         sorted_dist = train_dist[sorted_idx]
         sorted_issame = train_issame[sorted_idx]
 
-        fp_total = int(np.sum(~sorted_issame))
+        fp_total = int(np.sum(np.logical_not(sorted_issame)))
         tp_total = len(sorted_issame) - fp_total
 
         # FIX 1a — Correct accuracy formula.
@@ -70,7 +70,7 @@ def calculate_roc(thresholds, embeddings1, embeddings2, actual_issame, nrof_fold
         # The length-N+1 arrays cover thresholds sorted_dist[0..N-1] plus one
         # extra slot (index N) representing "accept all pairs".
         cs_issame = np.concatenate([[0], np.cumsum(sorted_issame)])   # cs_issame[i] = TP at sorted_dist[i]
-        cs_diff   = np.concatenate([[0], np.cumsum(~sorted_issame)])  # cs_diff[i]   = FP at sorted_dist[i]
+        cs_diff   = np.concatenate([[0], np.cumsum(np.logical_not(sorted_issame))])  # cs_diff[i]   = FP at sorted_dist[i]
         acc = (cs_issame + fp_total - cs_diff) / len(train_set)
 
         # FIX 1b — Correct threshold index mapping.
@@ -137,7 +137,7 @@ def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_targe
         train_dist   = dist_all[train_set]
         train_issame = actual_issame[train_set]
 
-        diff_dist = train_dist[~train_issame]
+        diff_dist = train_dist[np.logical_not(train_issame)]
 
         # FIX 2 — Correct FAR threshold derivation.
         #
@@ -171,6 +171,7 @@ def calculate_val_far(threshold, dist, actual_issame):
 
 
 def evaluate(embeddings, actual_issame, nrof_folds=10, distance_metric=0, subtract_mean=False):
+    actual_issame = np.asarray(actual_issame).astype(bool)
     # FIX 3 — Adapt threshold range to the distance metric.
     #
     # The old code always used np.arange(0, 4, 0.01). Cosine angular distance

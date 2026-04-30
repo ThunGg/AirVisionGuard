@@ -83,6 +83,7 @@ def bin_loader(path):
         else:
             raise EnvironmentError('Only support python 2 or 3')
     bins, lbs = data
+    lbs = np.array(lbs).astype(bool)
     assert len(bins) == 2*len(lbs)
     imgs = [pil_loader(b) for b in bins]
     return imgs, lbs
