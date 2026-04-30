@@ -124,7 +124,10 @@ def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_targe
         for threshold_idx, threshold in enumerate(thresholds):
             _, far_train[threshold_idx] = calculate_val_far(threshold, dist[train_set], actual_issame[train_set])
         if np.max(far_train)>=far_target:
-            f = interpolate.interp1d(far_train, thresholds, kind='slinear')
+            # Handle duplicate far_train values by keeping only the unique ones
+            # This is common when the model is not yet trained and produces identical scores
+            _, unique_indices = np.unique(far_train, return_index=True)
+            f = interpolate.interp1d(far_train[unique_indices], thresholds[unique_indices], kind='slinear')
             threshold = f(far_target)
         else:
             threshold = 0.0
