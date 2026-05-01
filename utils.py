@@ -77,21 +77,25 @@ def log(string):
         logging.info(string)
 
 
+def numeric_sort_key(value: str):
+    return (0, int(value)) if value.isdigit() else (1, value)
+
+
 def bin_loader(path):
     '''load verification img array and label from bin file
     '''
     with open(path, 'rb') as f:
         if sys.version_info[0] == 2:
-            data = pickle.load(open(path, 'rb'))
+            data = pickle.load(f)
         elif sys.version_info[0] == 3:
-            data = pickle.load(open(path, 'rb'), encoding='bytes')
+            data = pickle.load(f, encoding='bytes')
         else:
             raise EnvironmentError('Only support python 2 or 3')
     bins, lbs = data
     lbs = np.array(lbs).astype(bool)
     assert len(bins) == 2*len(lbs)
-    imgs = [pil_loader(b) for b in bins]
-    return imgs, lbs
+    # Returning raw bytes to save memory; decoding will happen on-demand in the Dataset
+    return bins, lbs
 
 def pil_loader(img_str):
     buff = io.BytesIO(img_str)

@@ -10,7 +10,10 @@ try:
     import mc
 except ImportError:
     pass
-from utils import bin_loader
+from typing import List, Tuple, Sequence, Iterable
+from dataclasses import dataclass
+from tqdm import tqdm
+from utils import bin_loader, numeric_sort_key
 
 import pdb
 
@@ -20,130 +23,64 @@ def pil_loader(img_str):
         img = img.convert('RGB')
     return img
 
-#class FaceDataset(Dataset):
-#    def __init__(self, config, task_idx, phase):
-#        self.root_dir = config.train.data_root[task_idx]
-#        self.config = config
-#        assert phase in ['train', 'val', 'test', 'extract']
-#        self.phase = phase
-#        
-#        if phase in ['train', 'val']:
-#            print("Building task #{} dataset from {} and {}".format(task_idx, config.train.data_list[task_idx], config.train.data_meta[task_idx]))
-#            with open(config.train.data_list[task_idx], 'r') as f:
-#                lines = f.readlines()
-#                self.lists = [os.path.join(config.train.data_root[task_idx], l.strip()) for l in lines]
-#            with open(config.train.data_meta[task_idx], 'r') as f:
-#                lines = f.readlines()
-#                num_img, num_class = lines[0].strip().split()
-#                self.num_img, self.num_class = int(num_img), int(num_class)
-#                self.metas = [int(l.strip()) for l in lines[1:]]
-#            assert self.num_img == len(self.lists)
-#            assert self.num_img == len(self.metas)
-#            assert self.num_class > max(self.metas)
-#        elif phase == "test": # test
-#            if config.test.benchmark == "megaface":
-#                self.lists = test.megaface.build_testset()
-#            elif config.test.benchmark == "ijba":
-#                self.lists = test.ijba.build_testset()
-#            elif config.test.benchmark == 'lfw':
-#                self.lists = test.lfw.build_testset()
-#            else:
-#                raise Exception("No such benchmark: {}".format(config.test.benchmark))
-#            self.num_img = len(self.lists)
-#            self.metas = None
-#        else: # extract
-#            with open(config.extract_info.data_list, 'r') as f:
-#                lines = f.readlines()
-#                self.lists = [os.path.join(config.extract_info.data_root, l.strip()) for l in lines]
-#            self.num_img = len(self.lists)
-#            self.metas = None
-#
-#        normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.3125, 0.3125, 0.3125])
-#        self.transforms = transforms.Compose([transforms.ToTensor(), normalize])
-#        self.initialized = False
-# 
-#    def __len__(self):
-#        return self.num_img
-# 
-#    def __init_memcached(self):
-#        if not self.initialized:
-#            server_list_config_file = "{}/server_list.conf".format(self.config.memcached_client)
-#            client_config_file = "{}/client.conf".format(self.config.memcached_client)
-#            self.mclient = mc.MemcachedClient.GetInstance(server_list_config_file, client_config_file)
-#            self.initialized = True
-#
-#    def _read_one(self, idx=None):
-#        if idx is None:
-#            idx = np.random.randint(self.num_img)
-#        filename = self.lists[idx]
-#        if self.metas is not None:
-#            label = self.metas[idx]
-#        else:
-#            label = 0
-#        try:
-#            value = mc.pyvector()
-#            self.mclient.Get(filename, value)
-#            value_str = mc.ConvertBuffer(value)
-#            img = pil_loader(value_str)
-#        except:
-#            print('Read image[{}] failed ({})'.format(idx, filename))
-#            return self._read_one()
-#        else:
-#            return img, label
-#            
-#    def __getitem__(self, idx):
-#        self.__init_memcached()
-#        ## memcached
-#        if self.config.memcached:
-#            img, label = self._read_one(idx)
-#        else:
-#            filename = self.lists[idx]
-#            if self.metas is not None:
-#                label = self.metas[idx]
-#            else:
-#                label = 0
-#            if not os.path.isfile(filename):
-#                raise Exception('Read image[{}] failed ({})'.format(idx, filename))
-#            img = Image.open(filename).convert('RGB')
-#
-#        ## transform & aug
-#        if self.phase == 'train' and self.config.train.augmentation['flip_aug']:
-#            if np.random.rand() < 0.5:
-#                img = img.transpose(Image.FLIP_LEFT_RIGHT)
-#        if self.phase == 'train':
-#            scale_height_diff = (np.random.rand() * 2 - 1) * self.config.train.augmentation['scale_aug']
-#            scale_width_diff = (np.random.rand() * 2 - 1) * self.config.train.augmentation['scale_aug']
-#            trans_diff_x = (np.random.rand() * 2 - 1) * self.config.train.augmentation['trans_aug']
-#            trans_diff_y = (np.random.rand() * 2 - 1) * self.config.train.augmentation['trans_aug']
-#        else:
-#            scale_height_diff = 0.
-#            scale_width_diff = 0.
-#            trans_diff_x = 0.
-#            trans_diff_y = 0.
-#
-#        crop_height_aug = self.config.transform.crop_size * (1 + scale_height_diff)
-#        crop_width_aug = self.config.transform.crop_size * (1 + scale_width_diff)
-#        center = (img.width / 2. * (1 + trans_diff_x), (img.height / 2. + self.config.transform.crop_center_y_offset) * (1 + trans_diff_y))
-#
-#        if center[0] < crop_width_aug / 2:
-#            crop_width_aug = center[0] * 2 - 0.5
-#        if center[1] < crop_height_aug / 2:
-#            crop_height_aug = center[1] * 2 - 0.5
-#        if center[0] + crop_width_aug / 2 >= img.width:
-#            crop_width_aug = (img.width - center[0]) * 2 - 0.5
-#        if center[1] + crop_height_aug / 2 >= img.height:
-#            crop_height_aug = (img.height - center[1]) * 2 - 0.5
-#
-#        rect = (center[0] - crop_width_aug / 2, center[1] - crop_height_aug / 2,
-#                center[0] + crop_width_aug / 2, center[1] + crop_height_aug / 2)
-#        img = img.crop(rect)
-#        img = img.resize((self.config.transform.final_size, self.config.transform.final_size), Image.BICUBIC)
-#
-#        if False: #DEBUG
-#            img.save("output/{}.jpg".format(idx))
-#
-#        img = self.transforms(img)
-#        return img, label
+
+@dataclass(frozen=True)
+class SampleRecord:
+    image_path: str
+    label: int
+    identity: str
+
+
+class FaceDataset(Dataset):
+    """
+    Standard dataset that opens images from paths provided in a list of SampleRecords.
+    """
+    def __init__(self, samples: Sequence[SampleRecord], transform=None) -> None:
+        self.samples = list(samples)
+        self.transform = transform
+        self.num_class = len(set(s.label for s in self.samples))
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int):
+        sample = self.samples[index]
+        with open(sample.image_path, 'rb') as f:
+            image = pil_loader(f.read())
+        if self.transform:
+            image = self.transform(image)
+        return image, sample.label
+
+
+def index_image_folder(dataset_dir: str | os.PathLike, image_extensions: Iterable[str] = ('.jpg', '.jpeg', '.png')) -> Tuple[List[SampleRecord], List[str]]:
+    """
+    Efficiently index a folder of images organized by identity subdirectories.
+    """
+    dataset_path = os.path.abspath(dataset_dir)
+    allowed_suffixes = {suffix.lower() for suffix in image_extensions}
+
+    identities = sorted(
+        [entry.name for entry in os.scandir(dataset_path) if entry.is_dir()],
+        key=numeric_sort_key,
+    )
+    label_mapping = {identity: index for index, identity in enumerate(identities)}
+    samples: List[SampleRecord] = []
+
+    for identity in tqdm(identities, desc="Indexing Images"):
+        identity_dir = os.path.join(dataset_path, identity)
+        with os.scandir(identity_dir) as entries:
+            for entry in entries:
+                if entry.is_file() and os.path.splitext(entry.name)[1].lower() in allowed_suffixes:
+                    samples.append(
+                        SampleRecord(
+                            image_path=entry.path,
+                            label=label_mapping[identity],
+                            identity=identity,
+                        )
+                    )
+
+    return samples, identities
+
 
 class GivenSizeSampler(Sampler):
     '''
@@ -207,7 +144,7 @@ class GivenSizeSampler(Sampler):
 
 class BinDataset(Dataset):
     def __init__(self, bin_file, transform=None):
-        self.img_lst, _ = bin_loader(bin_file)
+        self.img_lst, self.lbs = bin_loader(bin_file)
         self.num = len(self.img_lst)
         self.transform = transform
 
@@ -218,7 +155,9 @@ class BinDataset(Dataset):
         if idx == None:
             idx = np.random.randint(self.num)
         try:
-            img = self.img_lst[idx]
+            # The img_lst now contains raw bytes, decode on-demand to save memory
+            raw_img = self.img_lst[idx]
+            img = pil_loader(raw_img)
             return img
         except Exception as err:
             print('Read image[{}] failed ({})'.format(idx, err))
