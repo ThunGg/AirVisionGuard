@@ -1,0 +1,51 @@
+workers: 4
+gpus: '0' # split using ","
+memcached: False
+memcached_client: ""
+
+model:
+    backbone: 'efficientnet_b0'
+    feature_dim: 512
+    arc_fc: True
+    feat_bn: True
+    input_size: 224
+
+train:
+    rand_seed: 0
+    batch_size: [128]
+    loss_weight: [1.0]
+    base_lr: 0.1
+    min_lr: 0.0001
+    max_epoch: 40
+    warmup_epochs: 5
+    warmup_start_factor: 0.1
+    momentum: 0.9
+    weight_decay: 0.0005
+    print_freq: 100
+    average_stats: 1000
+    data_root:
+        - 'data/webface/images'
+    data_list:
+        - 'data/webface/list.txt'
+
+val:
+    flag: False
+    batch_size: [128]
+    data_root: 
+    data_list: 
+    data_meta:
+
+test:
+    flag: True
+    initial_test: True
+    interval: 1
+    test_root: 'data/webface'
+    benchmark: ['lfw', 'cfp_ff', 'cfp_fp', 'agedb_30', 'calfw', 'cplfw']
+    batch_size: 128
+    nfolds: 10
+
+extract_info:
+    batch_size: 128
+    data_name: '' # used to name the feature file
+    data_root: ''
+    data_list: '' # image file name in each line

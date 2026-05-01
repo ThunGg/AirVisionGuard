@@ -6,3 +6,4 @@ from .ir import *
 from .densenet  import *
 from .nasnet import *
 from .mobilefacenet import *
+from .efficientnet import *
