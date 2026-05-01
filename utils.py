@@ -49,17 +49,22 @@ def save_state(state, path, epoch, is_last=False):
     #if is_last:
         #os.system('cp {}_{}.pth.tar {}_last.pth.tar'.format(path, epoch, path))
 
-def load_state(path, model, optimizer=None):
+def load_state(path, model, optimizer=None, scaler=None, scheduler=None):
     if os.path.isfile(path):
         log("=> loading checkpoint '{}'".format(path))
-        checkpoint = torch.load(path)
+        checkpoint = torch.load(path, map_location='cpu')
         model.load_state_dict(checkpoint['state_dict'], strict=False)
         log("=> loaded checkpoint '{}' (epoch {} iteration {})".format(path, checkpoint['epoch'], checkpoint['count']))
-        if optimizer is not None:
+        if optimizer is not None and 'optimizer' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
-            return checkpoint
+        if scaler is not None and 'scaler' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler'])
+        if scheduler is not None and 'scheduler' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler'])
+        return checkpoint
     else:
         log("=> no checkpoint found at '{}'".format(path))
+        return None
 
 def log(string):
     import torch.distributed as dist

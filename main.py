@@ -248,10 +248,11 @@ def main():
     ## resume / load model
     start_epoch = 0
     count = [0]
+    checkpoint = None
     if args.load_path:
         assert os.path.isfile(args.load_path), "File not exist: {}".format(args.load_path)
         if args.resume:
-            checkpoint = load_state(args.load_path, model, optimizer)
+            checkpoint = load_state(args.load_path, model, optimizer, scaler)
             start_epoch = checkpoint['epoch']
             count[0] = checkpoint['count']
         else:
@@ -299,6 +300,13 @@ def main():
             last_epoch=count[0]-1
         )
 
+    if args.resume and checkpoint is not None and 'scheduler' in checkpoint:
+        try:
+            lr_scheduler.load_state_dict(checkpoint['scheduler'])
+            log("=> loaded scheduler state from checkpoint")
+        except Exception as e:
+            log("=> Warning: failed to load scheduler state ({}). Resuming via last_epoch instead.".format(e))
+
     ## logger
     if args.rank == 0:
         logging.basicConfig(filename=os.path.join('{}/logs'.format(args.save_path), 'log-{}-{:02d}-{:02d}_{:02d}:{:02d}:{:02d}.txt'.format(
@@ -312,7 +320,7 @@ def main():
     ## initial validate
     if args.val.flag:
         # torch.cuda.empty_cache()
-        validate(val_loader, model, start_epoch, args.train.loss_weight, len(train_loader[0]), tb_logger)
+        validate(val_loader, model, start_epoch, args.train.loss_weight, len(train_loader[0]), tb_logger, count)
 
     ## initial evaluate
     if args.test.flag and args.test.initial_test:
@@ -340,7 +348,9 @@ def main():
                 'arch': args.model.backbone,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-                'count': count[0]
+                'count': count[0],
+                'scaler': scaler.state_dict(),
+                'scheduler': lr_scheduler.state_dict()
             }, args.save_path + "/checkpoints/ckpt_epoch", epoch + 1, is_last=(epoch + 1 == args.train.max_epoch))
 
         # validate
@@ -468,8 +478,9 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
 
         count[0] += 1
 
-def validate(val_loader, model, criterion, epoch, loss_weight, train_len, tb_logger, count):
-    raise NotImplemented
+def validate(val_loader, model, epoch, loss_weight, train_len, tb_logger, count):
+    log("Validation not fully implemented in this script. Skipping...")
+    return
     num_tasks = len(val_loader)
     losses = [AverageMeter(args.val.average_stats) for k in range(num_tasks)]
 
