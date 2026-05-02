@@ -8,3 +8,4 @@ from .nasnet import *
 from .mobilefacenet import *
 from .efficientnet import *
 from .mobilefacenetv3 import *
+from .facelivtv2 import *
