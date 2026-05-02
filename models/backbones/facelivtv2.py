@@ -2,9 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import SqueezeExcite
-from timm.models.layers import to_2tuple
-from timm.models.vision_transformer import trunc_normal_
+from timm.layers import SqueezeExcite, to_2tuple, trunc_normal_
 from timm.models import register_model
 from torch.nn.modules.batchnorm import _BatchNorm
 
