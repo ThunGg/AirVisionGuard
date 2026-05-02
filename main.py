@@ -284,7 +284,7 @@ def main():
     log("Creating model on [{}] gpus: {}".format(args.ngpu, args.gpus))
     if args.evaluate or args.extract:
         args.num_classes = None
-    model = models.MultiTaskWithLoss(backbone=args.model.backbone, num_classes=args.num_classes, feature_dim=args.model.feature_dim, spatial_size=args.model.input_size, arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn)
+    model = models.MultiTaskWithLoss(backbone=args.model.backbone, num_classes=args.num_classes, feature_dim=args.model.feature_dim, spatial_size=args.model.input_size, arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn, loss_type=getattr(args.model, 'loss_type', 'crossentropy'))
     
     if args.distributed:
         model.cuda(args.gpu)

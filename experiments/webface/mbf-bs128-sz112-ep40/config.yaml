@@ -9,6 +9,7 @@ model:
     arc_fc: True
     feat_bn: True
     input_size: 112
+    loss_type: 'crossentropy' # options: 'crossentropy', 'focal'
 
 train:
     rand_seed: 0

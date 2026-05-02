@@ -1,15 +1,39 @@
+import torch
 import torch.nn as nn
 from .ext_layers import ArcFullyConnected
 from . import backbones
 
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ce = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, input, target):
+        logp = self.ce(input, target)
+        p = torch.exp(-logp)
+        loss = (1 - p) ** self.gamma * logp
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
 class MultiTaskWithLoss(nn.Module):
-    def __init__(self, backbone, num_classes, feature_dim, spatial_size, arc_fc=False, feat_bn=False, s=64, m=0.5, is_pw=True, is_hard=False):
+    def __init__(self, backbone, num_classes, feature_dim, spatial_size, arc_fc=False, feat_bn=False, s=64, m=0.5, is_pw=True, is_hard=False, loss_type='crossentropy'):
         super(MultiTaskWithLoss, self).__init__()
         self.feat_bn = feat_bn
         self.basemodel = backbones.__dict__[backbone](feature_dim=feature_dim, spatial_size=spatial_size)
         if feat_bn:
             self.bn1d = nn.BatchNorm1d(feature_dim, affine=False, eps=2e-5, momentum=0.9)
-        self.criterion = nn.CrossEntropyLoss()
+        
+        if loss_type == 'focal':
+            self.criterion = FocalLoss()
+        else:
+            self.criterion = nn.CrossEntropyLoss()
+            
         if num_classes is not None:
             self.num_tasks = len(num_classes)
             self.arc_fc = arc_fc
