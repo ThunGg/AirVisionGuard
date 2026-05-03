@@ -295,13 +295,14 @@ def main():
             'teacher_checkpoint': getattr(kd_obj, 'teacher_checkpoint', ''),
             'teacher_feature_dim': getattr(kd_obj, 'teacher_feature_dim', args.model.feature_dim),
             'teacher_input_size': getattr(kd_obj, 'teacher_input_size', args.model.input_size),
-            'alpha': getattr(kd_obj, 'alpha', 0.5),
+            'alpha': getattr(kd_obj, 'alpha', 1.0),
+            'beta': getattr(kd_obj, 'beta', 0.5),
             'temperature': getattr(kd_obj, 'temperature', 1.0),
             'loss_type': getattr(kd_obj, 'loss_type', 'cosine'),
         }
         if kd_config['enabled']:
-            log("Knowledge Distillation ENABLED: teacher={}, alpha={}, temperature={}, loss_type={}".format(
-                kd_config['teacher_backbone'], kd_config['alpha'], kd_config['temperature'], kd_config['loss_type']))
+            log("Knowledge Distillation ENABLED: teacher={}, alpha={}, beta={}, temperature={}, loss_type={}".format(
+                kd_config['teacher_backbone'], kd_config['alpha'], kd_config['beta'], kd_config['temperature'], kd_config['loss_type']))
 
     model = models.MultiTaskWithLoss(
         backbone=args.model.backbone, num_classes=args.num_classes,
@@ -466,7 +467,8 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
 
     # KD tracking
     kd_enabled = hasattr(args, 'knowledge_distillation') and getattr(args.knowledge_distillation, 'enabled', False)
-    kd_alpha = getattr(args.knowledge_distillation, 'alpha', 0.5) if kd_enabled else 0.0
+    kd_alpha = getattr(args.knowledge_distillation, 'alpha', 1.0) if kd_enabled else 1.0
+    kd_beta = getattr(args.knowledge_distillation, 'beta', 0.5) if kd_enabled else 0.0
     kd_losses = AverageMeter(args.train.average_stats) if kd_enabled else None
 
     # switch to train mode
@@ -498,7 +500,7 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
 
             # Combine task loss with KD loss
             if kd_loss is not None:
-                loss_total = (1.0 - kd_alpha) * task_loss_total + kd_alpha * kd_loss
+                loss_total = kd_alpha * task_loss_total + kd_beta * kd_loss
             else:
                 loss_total = task_loss_total
 
@@ -541,9 +543,9 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
                       'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
                        k, loss_weight[k], loss=losses[k]))
             if kd_losses is not None:
-                log('KD:\talpha: {0:.2g}\t'
+                log('KD:\talpha: {0:.2g}\tbeta: {1:.2g}\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
-                       kd_alpha, loss=kd_losses))
+                       kd_alpha, kd_beta, loss=kd_losses))
 
         # tensorboard logger
         if tb_logger:

@@ -17,7 +17,8 @@ knowledge_distillation:
     teacher_checkpoint: 'pretrained_models/teacher.pth.tar'  # path to teacher checkpoint
     teacher_feature_dim: 512                    # teacher embedding dimension
     teacher_input_size: 112                     # teacher input resolution
-    alpha: 0.5                                  # KD weight: L = (1-alpha)*L_task + alpha*L_kd
+    alpha: 1.0                                  # Weight for task loss: L = alpha*L_task + beta*L_kd
+    beta: 0.5                                   # Weight for KD loss
     temperature: 1.0                            # temperature scaling for KD loss
     loss_type: 'cosine'                         # options: 'cosine', 'mse'
 
