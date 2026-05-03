@@ -12,6 +12,7 @@ model:
     loss_type: 'crossentropy' # options: 'crossentropy', 'focal'
 
 train:
+    optimizer: 'sgd' # options: 'sgd', 'adam', 'adamw'
     rand_seed: 0
     batch_size: [128]
     loss_weight: [1.0]

@@ -324,9 +324,19 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=torch.cuda.is_available())
 
     ## criterion and optimizer
-    optimizer = torch.optim.SGD(model.parameters(), args.train.base_lr,
-                                momentum=args.train.momentum,
-                                weight_decay=args.train.weight_decay)
+    opt_name = getattr(args.train, 'optimizer', 'sgd').lower()
+    if opt_name == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), args.train.base_lr,
+                                    momentum=args.train.momentum,
+                                    weight_decay=args.train.weight_decay)
+    elif opt_name == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), args.train.base_lr,
+                                     weight_decay=args.train.weight_decay)
+    elif opt_name == 'adamw':
+        optimizer = torch.optim.AdamW(model.parameters(), args.train.base_lr,
+                                      weight_decay=args.train.weight_decay)
+    else:
+        raise ValueError("Unsupported optimizer: {}".format(opt_name))
 
     ## resume / load model
     start_epoch = 0
