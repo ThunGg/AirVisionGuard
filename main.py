@@ -117,7 +117,30 @@ def main():
             d = config
             for k in keys[:-1]:
                 d = d.setdefault(k, {})
-            d[keys[-1]] = yaml.safe_load(val)
+            # Automatically convert numerical values to correct data types
+            try:
+                v = yaml.safe_load(val)
+                existing = d.get(keys[-1])
+
+                # Handle comma-separated lists (e.g. 1,2,3 -> [1,2,3])
+                # We skip this for existing string fields to preserve comma-separated strings like gpus
+                if isinstance(v, str) and ',' in v and not isinstance(existing, str):
+                    try:
+                        v_list = [yaml.safe_load(item.strip()) for item in v.split(',')]
+                        if any(not isinstance(item, str) for item in v_list):
+                            v = v_list
+                    except:
+                        pass
+
+                # Type consistency: if original was a list, ensure new value is a list
+                if isinstance(existing, list) and not isinstance(v, list):
+                    v = [v]
+                # If original was a string, keep it a string (e.g. gpus: '0' -> '0')
+                elif isinstance(existing, str) and not isinstance(v, str):
+                    v = str(v)
+                d[keys[-1]] = v
+            except:
+                d[keys[-1]] = val
 
     def dict_to_argobj(d):
         obj = ArgObj()
