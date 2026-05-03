@@ -123,7 +123,6 @@ def main():
                 existing = d.get(keys[-1])
 
                 # Handle comma-separated lists (e.g. 1,2,3 -> [1,2,3])
-                # We skip this for existing string fields to preserve comma-separated strings like gpus
                 if isinstance(v, str) and ',' in v and not isinstance(existing, str):
                     try:
                         v_list = [yaml.safe_load(item.strip()) for item in v.split(',')]
@@ -132,14 +131,24 @@ def main():
                     except:
                         pass
 
-                # Type consistency: if original was a list, ensure new value is a list
-                if isinstance(existing, list) and not isinstance(v, list):
-                    v = [v]
-                # If original was a string, keep it a string (e.g. gpus: '0' -> '0')
-                elif isinstance(existing, str) and not isinstance(v, str):
-                    v = str(v)
+                # Type consistency and automatic numerical conversion
+                if existing is not None:
+                    if isinstance(existing, list) and not isinstance(v, list):
+                        v = [v]
+                    elif isinstance(existing, bool) and not isinstance(v, bool):
+                        v = str(v).lower() in ['true', 'yes', '1']
+                    elif isinstance(existing, int) and not isinstance(v, (int, float)):
+                        try: v = int(float(v)) # handle "0.1" for int field
+                        except: pass
+                    elif isinstance(existing, float) and not isinstance(v, (int, float)):
+                        try: v = float(v)
+                        except: pass
+                    elif isinstance(existing, str) and not isinstance(v, str):
+                        v = str(v)
+                
                 d[keys[-1]] = v
-            except:
+            except Exception as e:
+                log("Warning: failed to parse option {}={}: {}".format(key, val, e))
                 d[keys[-1]] = val
 
     def dict_to_argobj(d):
