@@ -284,7 +284,30 @@ def main():
     log("Creating model on [{}] gpus: {}".format(args.ngpu, args.gpus))
     if args.evaluate or args.extract:
         args.num_classes = None
-    model = models.MultiTaskWithLoss(backbone=args.model.backbone, num_classes=args.num_classes, feature_dim=args.model.feature_dim, spatial_size=args.model.input_size, arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn, loss_type=getattr(args.model, 'loss_type', 'crossentropy'))
+
+    # Parse knowledge distillation config
+    kd_config = None
+    if hasattr(args, 'knowledge_distillation'):
+        kd_obj = args.knowledge_distillation
+        kd_config = {
+            'enabled': getattr(kd_obj, 'enabled', False),
+            'teacher_backbone': getattr(kd_obj, 'teacher_backbone', ''),
+            'teacher_checkpoint': getattr(kd_obj, 'teacher_checkpoint', ''),
+            'teacher_feature_dim': getattr(kd_obj, 'teacher_feature_dim', args.model.feature_dim),
+            'teacher_input_size': getattr(kd_obj, 'teacher_input_size', args.model.input_size),
+            'alpha': getattr(kd_obj, 'alpha', 0.5),
+            'temperature': getattr(kd_obj, 'temperature', 1.0),
+        }
+        if kd_config['enabled']:
+            log("Knowledge Distillation ENABLED: teacher={}, alpha={}, temperature={}".format(
+                kd_config['teacher_backbone'], kd_config['alpha'], kd_config['temperature']))
+
+    model = models.MultiTaskWithLoss(
+        backbone=args.model.backbone, num_classes=args.num_classes,
+        feature_dim=args.model.feature_dim, spatial_size=args.model.input_size,
+        arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn,
+        loss_type=getattr(args.model, 'loss_type', 'crossentropy'),
+        kd_config=kd_config)
     
     if args.distributed:
         model.cuda(args.gpu)
@@ -440,6 +463,11 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
     data_time = AverageMeter(args.train.average_stats)
     losses = [AverageMeter(args.train.average_stats) for k in range(num_tasks)]
 
+    # KD tracking
+    kd_enabled = hasattr(args, 'knowledge_distillation') and getattr(args.knowledge_distillation, 'enabled', False)
+    kd_alpha = getattr(args.knowledge_distillation, 'alpha', 0.5) if kd_enabled else 0.0
+    kd_losses = AverageMeter(args.train.average_stats) if kd_enabled else None
+
     # switch to train mode
     model.train()
 
@@ -461,11 +489,17 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
         
         with torch.amp.autocast("cuda"):
             # measure accuracy and record loss
-            loss = model(input, target, slice_idx)
+            task_losses, kd_loss = model(input, target, slice_idx)
             
-            loss_total = 0.
+            task_loss_total = 0.
             for k in range(num_tasks):
-                loss_total = loss_total + loss[k].mean() * loss_weight[k]
+                task_loss_total = task_loss_total + task_losses[k].mean() * loss_weight[k]
+
+            # Combine task loss with KD loss
+            if kd_loss is not None:
+                loss_total = (1.0 - kd_alpha) * task_loss_total + kd_alpha * kd_loss
+            else:
+                loss_total = task_loss_total
 
         # scale loss and backprop
         scaler.scale(loss_total).backward()
@@ -480,9 +514,11 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
 
         for k in range(num_tasks):
             if torch.__version__ >= '1.1.0':
-                losses[k].update(loss[k].mean().item()) 
+                losses[k].update(task_losses[k].mean().item()) 
             else:
-                losses[k].update(loss[k].mean().data[0])
+                losses[k].update(task_losses[k].mean().data[0])
+        if kd_loss is not None:
+            kd_losses.update(kd_loss.item())
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -503,11 +539,17 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
                       'LW: {1:.2g}\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
                        k, loss_weight[k], loss=losses[k]))
+            if kd_losses is not None:
+                log('KD:\talpha: {0:.2g}\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                       kd_alpha, loss=kd_losses))
 
         # tensorboard logger
         if tb_logger:
             for k in range(num_tasks):
                 tb_logger.add_scalar('train_loss_{}'.format(k), losses[k].val, count[0])
+            if kd_losses is not None:
+                tb_logger.add_scalar('train_kd_loss', kd_losses.val, count[0])
             tb_logger.add_scalar('lr', optimizer.param_groups[0]['lr'], count[0])
 
         count[0] += 1

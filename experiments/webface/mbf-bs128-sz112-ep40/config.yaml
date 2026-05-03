@@ -11,6 +11,15 @@ model:
     input_size: 112
     loss_type: 'crossentropy' # options: 'crossentropy', 'focal'
 
+knowledge_distillation:
+    enabled: false                              # set to true to enable KD
+    teacher_backbone: 'mobilefacenet'           # teacher architecture name
+    teacher_checkpoint: 'pretrained_models/teacher.pth.tar'  # path to teacher checkpoint
+    teacher_feature_dim: 512                    # teacher embedding dimension
+    teacher_input_size: 112                     # teacher input resolution
+    alpha: 0.5                                  # KD weight: L = (1-alpha)*L_task + alpha*L_kd
+    temperature: 1.0                            # temperature scaling for cosine similarity
+
 train:
     rand_seed: 0
     batch_size: [128]
