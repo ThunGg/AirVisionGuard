@@ -123,16 +123,27 @@ class MultiTaskWithLoss(nn.Module):
         else:
             state_dict = checkpoint
 
+        # Check if it's a full framework checkpoint (has 'basemodel.' keys)
+        has_basemodel_prefix = any('basemodel.' in k for k in state_dict.keys())
+
         # Extract teacher backbone weights, stripping wrapper prefixes
         teacher_state = {}
         bn_state = {}
         for key, val in state_dict.items():
             # Strip 'module.' prefix from DataParallel/DDP
             clean_key = key.replace('module.', '', 1) if key.startswith('module.') else key
-            if clean_key.startswith('basemodel.'):
-                teacher_state[clean_key.replace('basemodel.', '', 1)] = val
-            elif clean_key.startswith('bn1d.'):
-                bn_state[clean_key.replace('bn1d.', '', 1)] = val
+            
+            if has_basemodel_prefix:
+                if clean_key.startswith('basemodel.'):
+                    teacher_state[clean_key.replace('basemodel.', '', 1)] = val
+                elif clean_key.startswith('bn1d.'):
+                    bn_state[clean_key.replace('bn1d.', '', 1)] = val
+            else:
+                # Assume it's a pure backbone checkpoint
+                if clean_key.startswith('bn1d.'):
+                    bn_state[clean_key.replace('bn1d.', '', 1)] = val
+                else:
+                    teacher_state[clean_key] = val
 
         missing, unexpected = self.teacher_model.load_state_dict(teacher_state, strict=False)
         if missing:
