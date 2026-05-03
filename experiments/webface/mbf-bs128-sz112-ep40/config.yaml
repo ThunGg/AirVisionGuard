@@ -18,7 +18,8 @@ knowledge_distillation:
     teacher_feature_dim: 512                    # teacher embedding dimension
     teacher_input_size: 112                     # teacher input resolution
     alpha: 0.5                                  # KD weight: L = (1-alpha)*L_task + alpha*L_kd
-    temperature: 1.0                            # temperature scaling for cosine similarity
+    temperature: 1.0                            # temperature scaling for KD loss
+    loss_type: 'cosine'                         # options: 'cosine', 'mse'
 
 train:
     rand_seed: 0

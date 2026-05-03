@@ -22,25 +22,34 @@ class FocalLoss(nn.Module):
             return loss
 
 
-class KDCosineEmbeddingLoss(nn.Module):
-    """Knowledge distillation loss using cosine similarity on embeddings.
+class KDLoss(nn.Module):
+    """Knowledge distillation loss for embeddings.
 
-    Computes: 1 - cos_sim(student_embedding, teacher_embedding)
-    Optionally scales embeddings by a temperature before computing similarity.
+    Supports 'cosine' (1 - cos_sim) and 'mse' (Mean Squared Error).
+    Optionally scales embeddings by a temperature before computing loss.
     """
-    def __init__(self, temperature=1.0):
-        super(KDCosineEmbeddingLoss, self).__init__()
+    def __init__(self, loss_type='cosine', temperature=1.0):
+        super(KDLoss, self).__init__()
+        self.loss_type = loss_type
         self.temperature = temperature
-        # target=+1 means we want the embeddings to be similar
-        self.criterion = nn.CosineEmbeddingLoss(reduction='mean')
+        if loss_type == 'cosine':
+            self.criterion = nn.CosineEmbeddingLoss(reduction='mean')
+        elif loss_type == 'mse':
+            self.criterion = nn.MSELoss(reduction='mean')
+        else:
+            raise ValueError("Unknown KD loss type: {}".format(loss_type))
 
     def forward(self, student_feat, teacher_feat):
         if self.temperature != 1.0:
             student_feat = student_feat / self.temperature
             teacher_feat = teacher_feat / self.temperature
-        # target = +1 for all pairs (we want them aligned)
-        target = torch.ones(student_feat.size(0), device=student_feat.device)
-        return self.criterion(student_feat, teacher_feat, target)
+            
+        if self.loss_type == 'cosine':
+            # target = +1 for all pairs (we want them aligned)
+            target = torch.ones(student_feat.size(0), device=student_feat.device)
+            return self.criterion(student_feat, teacher_feat, target)
+        else:
+            return self.criterion(student_feat, teacher_feat)
 
 
 class MultiTaskWithLoss(nn.Module):
@@ -94,7 +103,8 @@ class MultiTaskWithLoss(nn.Module):
                 self.kd_projection = nn.Linear(feature_dim, teacher_feature_dim, bias=False)
 
             # KD loss
-            self.kd_criterion = KDCosineEmbeddingLoss(temperature=temperature)
+            self.kd_criterion = KDLoss(loss_type=kd_config.get('loss_type', 'cosine'), 
+                                       temperature=temperature)
 
         if num_classes is not None:
             self.num_tasks = len(num_classes)

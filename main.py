@@ -297,10 +297,11 @@ def main():
             'teacher_input_size': getattr(kd_obj, 'teacher_input_size', args.model.input_size),
             'alpha': getattr(kd_obj, 'alpha', 0.5),
             'temperature': getattr(kd_obj, 'temperature', 1.0),
+            'loss_type': getattr(kd_obj, 'loss_type', 'cosine'),
         }
         if kd_config['enabled']:
-            log("Knowledge Distillation ENABLED: teacher={}, alpha={}, temperature={}".format(
-                kd_config['teacher_backbone'], kd_config['alpha'], kd_config['temperature']))
+            log("Knowledge Distillation ENABLED: teacher={}, alpha={}, temperature={}, loss_type={}".format(
+                kd_config['teacher_backbone'], kd_config['alpha'], kd_config['temperature'], kd_config['loss_type']))
 
     model = models.MultiTaskWithLoss(
         backbone=args.model.backbone, num_classes=args.num_classes,
