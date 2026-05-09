@@ -106,33 +106,28 @@ def load_quantized_model(config_path, model_path, device='cpu',
 
         log(f"Applying torchao quantization with scheme: {quant_dtype}")
         try:
-            import traceback
             from torchao.quantization import quantize_
             # torchao quantization requires float32 weights.
-            # model.float() converts parameters & buffers, but some modules may
-            # store raw tensor attributes that .float() does not reach.
             model = model.float()
-            for mod in model.modules():
-                for attr_name in list(vars(mod).keys()):
-                    attr = getattr(mod, attr_name)
-                    if isinstance(attr, torch.Tensor) and attr.is_floating_point() and attr.dtype != torch.float32:
-                        log(f"  Converting {type(mod).__name__}.{attr_name}: {attr.dtype} -> float32")
-                        setattr(mod, attr_name, attr.float())
 
-            # Diagnostic: verify no non-float32 tensors remain
-            for name, param in model.named_parameters():
-                if param.dtype != torch.float32:
-                    log(f"  WARNING: param {name} is still {param.dtype}")
-            for name, buf in model.named_buffers():
-                if buf.is_floating_point() and buf.dtype != torch.float32:
-                    log(f"  WARNING: buffer {name} is still {buf.dtype}")
+            # Force float32 as the default dtype during quantization.
+            # Some environments (e.g. Kaggle with AMP) set the global default
+            # dtype to bfloat16, which causes torchao's internal torch.zeros()
+            # calls to produce bfloat16 tensors and fail.
+            prev_dtype = torch.get_default_dtype()
+            torch.set_default_dtype(torch.float32)
+            try:
+                qconfig = _get_quant_config(quant_dtype)
+                quantize_(model, qconfig)
+            finally:
+                torch.set_default_dtype(prev_dtype)
 
-            qconfig = _get_quant_config(quant_dtype)
-            quantize_(model, qconfig)
             log("Model quantization applied successfully.")
         except Exception as e:
             log(f"Failed to apply quantization: {e}")
+            import traceback
             traceback.print_exc()
+            raise
 
         mem_after = process.memory_info().rss / (1024 * 1024)
         log(f"RAM usage after quantization: {mem_after:.2f} MB")
