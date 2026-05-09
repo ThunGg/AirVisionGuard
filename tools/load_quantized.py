@@ -66,6 +66,10 @@ def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=Non
     if 'epoch' in checkpoint and 'count' in checkpoint:
         log("=> loaded checkpoint '{}' (epoch {} iteration {})".format(
             model_path, checkpoint['epoch'], checkpoint['count']))
+    if quantize and str(device) != 'cpu':
+        log("Warning: Dynamic quantization requires CPU. Forcing device to 'cpu'.")
+        device = 'cpu'
+
     model = model.to(device)
     model.eval()
 
