@@ -107,20 +107,18 @@ def load_quantized_model(config_path, model_path, device='cpu',
         log(f"Applying torchao quantization with scheme: {quant_dtype}")
         try:
             from torchao.quantization import quantize_
-            # torchao quantization requires float32 weights.
-            model = model.float()
 
-            # Force float32 as the default dtype during quantization.
-            # Some environments (e.g. Kaggle with AMP) set the global default
-            # dtype to bfloat16, which causes torchao's internal torch.zeros()
-            # calls to produce bfloat16 tensors and fail.
-            prev_dtype = torch.get_default_dtype()
-            torch.set_default_dtype(torch.float32)
-            try:
-                qconfig = _get_quant_config(quant_dtype)
-                quantize_(model, qconfig)
-            finally:
-                torch.set_default_dtype(prev_dtype)
+            # Int4WeightOnlyConfig uses TensorCoreTiledLayout which internally
+            # packs scales/zeros via tinygemm in bfloat16. The model must be in
+            # bfloat16 for the scale and zero_point dtypes to match.
+            # Int8 configs work with float32.
+            if 'int4' in quant_dtype:
+                model = model.to(torch.bfloat16)
+            else:
+                model = model.float()
+
+            qconfig = _get_quant_config(quant_dtype)
+            quantize_(model, qconfig)
 
             log("Model quantization applied successfully.")
         except Exception as e:
