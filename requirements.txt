@@ -1,5 +1,6 @@
 torch
 torchvision
+torchao
 numpy<2
 mxnet==1.9.1
 opencv-python

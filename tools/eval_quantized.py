@@ -16,7 +16,7 @@ from datasets import BinDataset, FileListDataset, GivenSizeSampler
 from utils import AverageMeter, log, normalize
 from evaluation.verify import evaluate
 from evaluation.megaface import test_megaface
-from tools.load_quantized import load_quantized_model, ArgObj
+from tools.load_quantized import load_quantized_model, ArgObj, QUANT_DTYPE_MAP
 
 def _build_loader_kwargs(num_workers):
     loader_kwargs = {}
@@ -101,6 +101,9 @@ def main():
     parser.add_argument('--device', type=str, default=default_device, help='Device to evaluate on (default: cuda if available else cpu)')
     parser.add_argument('--eval-mode', type=str, choices=['unquantized', 'quantized', 'both'], default='both', 
                         help='Control whether to quantize the model, evaluate unquantized, or both.')
+    parser.add_argument('--quant-dtype', type=str, default='int8_dynamic',
+                        choices=list(QUANT_DTYPE_MAP.keys()),
+                        help='Quantization scheme to apply (default: int8_dynamic)')
     args = parser.parse_args()
 
     # Load config
@@ -170,8 +173,8 @@ def main():
     unquantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=False)
     print_model_stats(unquantized_model, "UNQUANTIZED")
     
-    quantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=True)
-    print_model_stats(quantized_model, "QUANTIZED")
+    quantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=True, quant_dtype=args.quant_dtype)
+    print_model_stats(quantized_model, f"QUANTIZED ({args.quant_dtype})")
 
     if args.eval_mode in ['unquantized', 'both']:
         log(">>> RUNNING UNQUANTIZED MODEL EVALUATION <<<")
