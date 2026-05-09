@@ -5,6 +5,7 @@ import time
 import yaml
 import torch
 import numpy as np
+import tempfile
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 
@@ -72,6 +73,21 @@ def evaluation(test_loader, model, num, benchmark, nfolds=10, labels=None):
     
         log(" * {}: accuracy: {:.4f}({:.4f})".format(benchmark, acc.mean(), acc.std()))
         return acc.mean()
+
+def print_model_stats(model, label=""):
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        torch.save(model.state_dict(), f)
+        f_name = f.name
+    size_mb = os.path.getsize(f_name) / (1024 * 1024)
+    os.remove(f_name)
+    
+    mem_params = sum([param.nelement() * param.element_size() for param in model.parameters()])
+    mem_bufs = sum([buf.nelement() * buf.element_size() for buf in model.buffers()])
+    mem_mb = (mem_params + mem_bufs) / (1024 * 1024)
+    
+    log(f"--- {label} Model Stats ---")
+    log(f"RAM Usage (Params & Buffers): {mem_mb:.2f} MB")
+    log(f"Disk Size (State Dict): {size_mb:.2f} MB")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Quantized Model')
@@ -150,19 +166,24 @@ def main():
 
     nfolds = getattr(config.test, 'nfolds', 10)
 
+    log(">>> LOADING MODELS FOR STATS <<<")
+    unquantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=False)
+    print_model_stats(unquantized_model, "UNQUANTIZED")
+    
+    quantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=True)
+    print_model_stats(quantized_model, "QUANTIZED")
+
     if args.eval_mode in ['unquantized', 'both']:
-        log(">>> PREPARING UNQUANTIZED MODEL EVALUATION <<<")
-        unquantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=False)
+        log(">>> RUNNING UNQUANTIZED MODEL EVALUATION <<<")
         run_eval_loop(unquantized_model, prefix="UNQUANTIZED")
-        del unquantized_model
-        torch.cuda.empty_cache()
 
     if args.eval_mode in ['quantized', 'both']:
-        log(">>> PREPARING QUANTIZED MODEL EVALUATION <<<")
-        quantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=True)
+        log(">>> RUNNING QUANTIZED MODEL EVALUATION <<<")
         run_eval_loop(quantized_model, prefix="QUANTIZED")
-        del quantized_model
-        torch.cuda.empty_cache()
+        
+    del unquantized_model
+    del quantized_model
+    torch.cuda.empty_cache()
 
     log("Evaluation script finished.")
 
