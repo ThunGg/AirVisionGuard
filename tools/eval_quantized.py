@@ -78,7 +78,10 @@ def main():
     parser.add_argument('--config', type=str, required=True, help='Path to training config.yaml')
     parser.add_argument('--model-path', type=str, required=True, help='Path to trained .pth.tar checkpoint')
     parser.add_argument('--workers', type=int, default=4, help='Number of data loading workers')
-    parser.add_argument('--device', type=str, default='cpu', help='Device to evaluate on (quantized models usually run best on CPU)')
+    default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    parser.add_argument('--device', type=str, default=default_device, help='Device to evaluate on (default: cuda if available else cpu)')
+    parser.add_argument('--eval-mode', type=str, choices=['unquantized', 'quantized', 'both'], default='both', 
+                        help='Control whether to quantize the model, evaluate unquantized, or both.')
     args = parser.parse_args()
 
     import logging
@@ -90,8 +93,18 @@ def main():
         config_dict = yaml.safe_load(f)
     config = ArgObj(config_dict)
 
-    # Load and quantize model
-    model = load_quantized_model(args.config, args.model_path, device=args.device)
+    # Create a function to run the full eval given a model
+    def run_eval_loop(eval_model, prefix=""):
+        for tb, tl, td in zip(benchmarks, test_loaders, test_datasets):
+            log(f"--- Starting {prefix} evaluation for {tb} ---")
+            evaluation(
+                test_loader=tl, 
+                model=eval_model, 
+                num=len(td), 
+                benchmark=tb,
+                nfolds=nfolds,
+                labels=getattr(td, 'lbs', None)
+            )
 
     # Setup datasets based on config.test
     test_datasets = []
@@ -137,17 +150,21 @@ def main():
 
     nfolds = getattr(config.test, 'nfolds', 10)
 
-    for tb, tl, td in zip(benchmarks, test_loaders, test_datasets):
-        log(f"--- Starting evaluation for {tb} ---")
-        evaluation(
-            test_loader=tl, 
-            model=model, 
-            num=len(td), 
-            benchmark=tb,
-            nfolds=nfolds,
-            labels=getattr(td, 'lbs', None)
-        )
-    log("Evaluation of quantized model finished.")
+    if args.eval_mode in ['unquantized', 'both']:
+        log(">>> PREPARING UNQUANTIZED MODEL EVALUATION <<<")
+        unquantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=False)
+        run_eval_loop(unquantized_model, prefix="UNQUANTIZED")
+        del unquantized_model
+        torch.cuda.empty_cache()
+
+    if args.eval_mode in ['quantized', 'both']:
+        log(">>> PREPARING QUANTIZED MODEL EVALUATION <<<")
+        quantized_model = load_quantized_model(args.config, args.model_path, device=args.device, quantize=True)
+        run_eval_loop(quantized_model, prefix="QUANTIZED")
+        del quantized_model
+        torch.cuda.empty_cache()
+
+    log("Evaluation script finished.")
 
 if __name__ == '__main__':
     main()

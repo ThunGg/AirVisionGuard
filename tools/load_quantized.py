@@ -20,16 +20,17 @@ class ArgObj(object):
             else:
                 setattr(self, k, v)
 
-def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=None):
+def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=None, quantize=True):
     """
-    Loads a trained model and applies dynamic quantization.
+    Loads a trained model and optionally applies dynamic quantization.
     
     Args:
         config_path (str): Path to the model configuration YAML file.
         model_path (str): Path to the trained .pth.tar checkpoint.
-        device (str or torch.device): Device to load the model on (usually 'cpu' for quantized models).
+        device (str or torch.device): Device to load the model on.
         qconfig_spec (set or dict, optional): Specification for layers to quantize. 
                                               Defaults to {torch.nn.Linear}.
+        quantize (bool): Whether to apply dynamic quantization. Defaults to True.
     
     Returns:
         torch.nn.Module: The quantized PyTorch model.
@@ -54,26 +55,30 @@ def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=Non
     model = model.to(device)
     model.eval()
 
-    if qconfig_spec is None:
-        qconfig_spec = {torch.nn.Linear}
+    if quantize:
+        if qconfig_spec is None:
+            qconfig_spec = {torch.nn.Linear}
 
-    process = psutil.Process(os.getpid())
-    mem_before = process.memory_info().rss / (1024 * 1024)
-    log(f"RAM usage before quantization: {mem_before:.2f} MB")
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss / (1024 * 1024)
+        log(f"RAM usage before quantization: {mem_before:.2f} MB")
 
-    log(f"Applying dynamic quantization to: {qconfig_spec}")
-    try:
-        quantized_model = torch.quantization.quantize_dynamic(
-            model, qconfig_spec, dtype=torch.qint8
-        )
-        log("Model quantization applied successfully.")
-    except Exception as e:
-        log(f"Failed to apply dynamic quantization: {e}")
+        log(f"Applying dynamic quantization to: {qconfig_spec}")
+        try:
+            quantized_model = torch.quantization.quantize_dynamic(
+                model, qconfig_spec, dtype=torch.qint8
+            )
+            log("Model quantization applied successfully.")
+        except Exception as e:
+            log(f"Failed to apply dynamic quantization: {e}")
+            quantized_model = model
+
+        mem_after = process.memory_info().rss / (1024 * 1024)
+        log(f"RAM usage after quantization: {mem_after:.2f} MB")
+        log(f"RAM usage difference: {mem_after - mem_before:.2f} MB")
+    else:
+        log("Skipping quantization as quantize=False.")
         quantized_model = model
-
-    mem_after = process.memory_info().rss / (1024 * 1024)
-    log(f"RAM usage after quantization: {mem_after:.2f} MB")
-    log(f"RAM usage difference: {mem_after - mem_before:.2f} MB")
 
     return quantized_model
 
