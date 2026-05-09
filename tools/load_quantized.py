@@ -52,10 +52,10 @@ def _get_quant_config(quant_dtype):
         )
 
     if config_cls_name == 'Int4WeightOnlyConfig':
-        # Use PlainLayout to avoid TensorCoreTiledLayout's dependency on
-        # tinygemm CUDA kernels which are not available on all GPUs.
-        from torchao.dtypes import PlainLayout
-        return Int4WeightOnlyConfig(group_size=128, layout=PlainLayout())
+        # Use Int4CPULayout to avoid TensorCoreTiledLayout's dependency on
+        # tinygemm CUDA kernels which are not available on all GPUs (e.g. T4).
+        from torchao.dtypes import Int4CPULayout
+        return Int4WeightOnlyConfig(group_size=128, layout=Int4CPULayout())
 
     config_cls = {
         'Int8DynamicActivationInt8WeightConfig': Int8DynamicActivationInt8WeightConfig,
@@ -113,14 +113,19 @@ def load_quantized_model(config_path, model_path, device='cpu',
         try:
             from torchao.quantization import quantize_
 
-            # Quantize on CPU for maximum compatibility, then move back.
+            # Quantize on CPU for maximum compatibility.
             target_device = next(model.parameters()).device
             model = model.cpu().float()
 
             qconfig = _get_quant_config(quant_dtype)
             quantize_(model, qconfig)
 
-            model = model.to(target_device)
+            # Int4 with Int4CPULayout must stay on CPU (no GPU kernel support
+            # on T4 and similar GPUs). Int8 can move back to the target device.
+            if 'int4' not in quant_dtype:
+                model = model.to(target_device)
+            else:
+                log("Note: int4 quantized model will run on CPU (no compatible GPU kernel).")
             log("Model quantization applied successfully.")
         except Exception as e:
             log(f"Failed to apply quantization: {e}")
