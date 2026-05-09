@@ -107,8 +107,15 @@ def load_quantized_model(config_path, model_path, device='cpu',
         log(f"Applying torchao quantization with scheme: {quant_dtype}")
         try:
             from torchao.quantization import quantize_
-            # torchao quantization requires float32 weights
+            # torchao quantization requires float32 weights.
+            # model.float() converts parameters & buffers, but some modules may
+            # store raw tensor attributes that .float() does not reach.
             model = model.float()
+            for mod in model.modules():
+                for attr_name in list(vars(mod).keys()):
+                    attr = getattr(mod, attr_name)
+                    if isinstance(attr, torch.Tensor) and attr.is_floating_point() and attr.dtype != torch.float32:
+                        setattr(mod, attr_name, attr.float())
             qconfig = _get_quant_config(quant_dtype)
             quantize_(model, qconfig)
             log("Model quantization applied successfully.")
