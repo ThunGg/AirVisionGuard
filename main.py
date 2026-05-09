@@ -472,7 +472,7 @@ def main():
             save_state({
                 'epoch': epoch + 1,
                 'arch': args.model.backbone,
-                'state_dict': model.state_dict(),
+                'state_dict': model.module.state_dict() if hasattr(model, 'module') else model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
                 'count': count[0],
                 'scaler': scaler.state_dict(),

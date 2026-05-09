@@ -50,8 +50,22 @@ def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=Non
     )
 
     log(f"Loading checkpoint from {model_path}")
-    load_state(model_path, model)
+    checkpoint = torch.load(model_path, map_location='cpu')
+    state_dict = checkpoint['state_dict']
     
+    # Handle checkpoints saved with DataParallel/DDP wrapper ('module.' prefix)
+    unwrapped_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith('module.'):
+            unwrapped_state_dict[k[len('module.'):]] = v
+        else:
+            unwrapped_state_dict[k] = v
+            
+    model.load_state_dict(unwrapped_state_dict, strict=False)
+    
+    if 'epoch' in checkpoint and 'count' in checkpoint:
+        log("=> loaded checkpoint '{}' (epoch {} iteration {})".format(
+            model_path, checkpoint['epoch'], checkpoint['count']))
     model = model.to(device)
     model.eval()
 
