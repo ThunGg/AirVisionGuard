@@ -84,13 +84,16 @@ def print_model_stats(model, label=""):
     size_mb = os.path.getsize(f_name) / (1024 * 1024)
     os.remove(f_name)
     
+    # Disk Size is the most reliable metric for packed models
+    log(f"--- {label} Model Stats ---")
+    log(f"Disk Size (State Dict): {size_mb:.2f} MB")
+    
+    # Simple heuristic for RAM: parameters + buffers
+    # Note: nelement() * element_size() can be misleading for tensor subclasses
     mem_params = sum([param.nelement() * param.element_size() for param in model.parameters()])
     mem_bufs = sum([buf.nelement() * buf.element_size() for buf in model.buffers()])
     mem_mb = (mem_params + mem_bufs) / (1024 * 1024)
-    
-    log(f"--- {label} Model Stats ---")
-    log(f"RAM Usage (Params & Buffers): {mem_mb:.2f} MB")
-    log(f"Disk Size (State Dict): {size_mb:.2f} MB")
+    log(f"Nominal RAM Usage (Params & Buffers): {mem_mb:.2f} MB")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Quantized Model')

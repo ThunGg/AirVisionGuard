@@ -118,7 +118,8 @@ def load_quantized_model(config_path, model_path, device='cpu',
             model = model.cpu().float()
 
             qconfig = _get_quant_config(quant_dtype)
-            quantize_(model, qconfig)
+            from torch.nn import Linear, Conv2d
+            quantize_(model, qconfig, lambda m, name: isinstance(m, (Linear, Conv2d)))
 
             # Int4 with Int4CPULayout must stay on CPU (no GPU kernel support
             # on T4 and similar GPUs). Int8 can move back to the target device.
