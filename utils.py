@@ -53,8 +53,21 @@ def load_state(path, model, optimizer=None, scaler=None, scheduler=None):
     if os.path.isfile(path):
         log("=> loading checkpoint '{}'".format(path))
         checkpoint = torch.load(path, map_location='cpu')
-        model.load_state_dict(checkpoint['state_dict'], strict=False)
-        log("=> loaded checkpoint '{}' (epoch {} iteration {})".format(path, checkpoint['epoch'], checkpoint['count']))
+        state_dict = checkpoint['state_dict']
+        
+        # Handle DataParallel/DDP wrapper mismatch between save and load states
+        is_model_wrapped = hasattr(model, 'module')
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if is_model_wrapped and not k.startswith('module.'):
+                new_state_dict['module.' + k] = v
+            elif not is_model_wrapped and k.startswith('module.'):
+                new_state_dict[k[len('module.'):]] = v
+            else:
+                new_state_dict[k] = v
+                
+        model.load_state_dict(new_state_dict, strict=False)
+        log("=> loaded checkpoint '{}' (epoch {} iteration {})".format(path, checkpoint.get('epoch', '?'), checkpoint.get('count', '?')))
         if optimizer is not None and 'optimizer' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
         if scaler is not None and 'scaler' in checkpoint:
