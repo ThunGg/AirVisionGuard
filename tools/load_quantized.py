@@ -60,7 +60,7 @@ def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=Non
 
     if quantize:
         if qconfig_spec is None:
-            qconfig_spec = {torch.nn.Linear}
+            qconfig_spec = {torch.nn.Linear, torch.nn.Conv2d}
 
         process = psutil.Process(os.getpid())
         mem_before = process.memory_info().rss / (1024 * 1024)
