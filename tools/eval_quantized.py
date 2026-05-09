@@ -45,14 +45,17 @@ def extract(ext_loader, model, num, silent=False):
             batch_time.update(time.time() - end)
             end = time.time()
             if i % 10 == 0 and not silent:
-                log("Extracting: {0}/{1}\t"
+                sys.stdout.write("\rExtracting: {0}/{1}\t"
                     "Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t"
                     "Data {data_time.val:.3f} ({data_time.avg:.3f})".format(
                     i, len(ext_loader), batch_time=batch_time, data_time=data_time))
+                sys.stdout.flush()
 
+    if not silent:
+        sys.stdout.write("\n")
     features = np.concatenate(features, axis=0)[:num, :]
     if not silent:
-        log("Extracting Done. Total time: {}".format(time.time() - start))
+        log("Extracting Done. Total time: {:.3f}".format(time.time() - start))
     return features
 
 def evaluation(test_loader, model, num, benchmark, nfolds=10, labels=None):
@@ -99,9 +102,6 @@ def main():
     parser.add_argument('--eval-mode', type=str, choices=['unquantized', 'quantized', 'both'], default='both', 
                         help='Control whether to quantize the model, evaluate unquantized, or both.')
     args = parser.parse_args()
-
-    import logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     # Load config
     log(f"Loading config from {args.config}")
