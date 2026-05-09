@@ -107,6 +107,8 @@ def load_quantized_model(config_path, model_path, device='cpu',
         log(f"Applying torchao quantization with scheme: {quant_dtype}")
         try:
             from torchao.quantization import quantize_
+            # torchao quantization requires float32 weights
+            model = model.float()
             qconfig = _get_quant_config(quant_dtype)
             quantize_(model, qconfig)
             log("Model quantization applied successfully.")
