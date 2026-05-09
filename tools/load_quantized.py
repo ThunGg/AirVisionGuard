@@ -106,6 +106,7 @@ def load_quantized_model(config_path, model_path, device='cpu',
 
         log(f"Applying torchao quantization with scheme: {quant_dtype}")
         try:
+            import traceback
             from torchao.quantization import quantize_
             # torchao quantization requires float32 weights.
             # model.float() converts parameters & buffers, but some modules may
@@ -115,12 +116,23 @@ def load_quantized_model(config_path, model_path, device='cpu',
                 for attr_name in list(vars(mod).keys()):
                     attr = getattr(mod, attr_name)
                     if isinstance(attr, torch.Tensor) and attr.is_floating_point() and attr.dtype != torch.float32:
+                        log(f"  Converting {type(mod).__name__}.{attr_name}: {attr.dtype} -> float32")
                         setattr(mod, attr_name, attr.float())
+
+            # Diagnostic: verify no non-float32 tensors remain
+            for name, param in model.named_parameters():
+                if param.dtype != torch.float32:
+                    log(f"  WARNING: param {name} is still {param.dtype}")
+            for name, buf in model.named_buffers():
+                if buf.is_floating_point() and buf.dtype != torch.float32:
+                    log(f"  WARNING: buffer {name} is still {buf.dtype}")
+
             qconfig = _get_quant_config(quant_dtype)
             quantize_(model, qconfig)
             log("Model quantization applied successfully.")
         except Exception as e:
             log(f"Failed to apply quantization: {e}")
+            traceback.print_exc()
 
         mem_after = process.memory_info().rss / (1024 * 1024)
         log(f"RAM usage after quantization: {mem_after:.2f} MB")
