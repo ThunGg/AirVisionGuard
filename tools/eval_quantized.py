@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 
 # Add parent directory to path to allow importing models, utils, etc.
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datasets import BinDataset, FileListDataset, GivenSizeSampler
 from utils import AverageMeter, log, normalize

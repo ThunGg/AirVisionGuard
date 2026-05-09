@@ -6,7 +6,7 @@ import yaml
 import logging
 
 # Add parent directory to path to allow importing models and utils
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import models
 from utils import load_state, log
