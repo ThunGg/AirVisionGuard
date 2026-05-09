@@ -4,6 +4,7 @@ import sys
 import torch
 import yaml
 import logging
+import psutil
 
 # Add parent directory to path to allow importing models and utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,6 +57,10 @@ def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=Non
     if qconfig_spec is None:
         qconfig_spec = {torch.nn.Linear}
 
+    process = psutil.Process(os.getpid())
+    mem_before = process.memory_info().rss / (1024 * 1024)
+    log(f"RAM usage before quantization: {mem_before:.2f} MB")
+
     log(f"Applying dynamic quantization to: {qconfig_spec}")
     try:
         quantized_model = torch.quantization.quantize_dynamic(
@@ -65,6 +70,10 @@ def load_quantized_model(config_path, model_path, device='cpu', qconfig_spec=Non
     except Exception as e:
         log(f"Failed to apply dynamic quantization: {e}")
         quantized_model = model
+
+    mem_after = process.memory_info().rss / (1024 * 1024)
+    log(f"RAM usage after quantization: {mem_after:.2f} MB")
+    log(f"RAM usage difference: {mem_after - mem_before:.2f} MB")
 
     return quantized_model
 
