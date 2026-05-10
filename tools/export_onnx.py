@@ -4,6 +4,7 @@ import argparse
 import os
 import yaml
 import sys
+import numpy as np
 
 # Add project root to path to allow imports from models
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -87,7 +88,7 @@ def export_onnx(config_path, load_path, output_path, input_size=(1, 3, 112, 112)
         dummy_input,
         output_path,
         export_params=True,
-        opset_version=12,
+        opset_version=18,
         do_constant_folding=True,
         input_names=['input'],
         output_names=['output'],
