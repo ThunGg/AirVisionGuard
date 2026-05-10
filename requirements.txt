@@ -13,3 +13,4 @@ tensorboardX
 onnx
 onnxruntime-gpu
 psutil
+onnxscript
