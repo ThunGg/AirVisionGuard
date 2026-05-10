@@ -10,3 +10,6 @@ PyYAML
 tqdm
 matplotlib
 tensorboardX
+onnx
+onnxruntime-gpu
+psutil
