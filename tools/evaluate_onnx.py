@@ -44,6 +44,39 @@ def measure_speed(model, dummy_input, iterations=100, device='cuda'):
     """Measure inference speed in milliseconds."""
     is_torch = isinstance(model, torch.nn.Module)
     
+    if not is_torch and device == 'cuda':
+        # Prepare IOBinding for ONNX
+        io_binding = model.io_binding()
+        input_name = model.get_inputs()[0].name
+        output_name = model.get_outputs()[0].name
+        input_tensor = dummy_input.to(device).contiguous()
+        
+        # Bind input
+        io_binding.bind_input(
+            name=input_name,
+            device_type='cuda',
+            device_id=0,
+            element_type=np.float32,
+            shape=input_tensor.shape,
+            buffer_ptr=input_tensor.data_ptr()
+        )
+        
+        # Bind output
+        output_shape = model.get_outputs()[0].shape
+        # Handle dynamic batch size if necessary
+        if isinstance(output_shape[0], str) or output_shape[0] < 0:
+            output_shape[0] = input_tensor.shape[0]
+        
+        output_tensor = torch.empty(output_shape, dtype=torch.float32, device=device).contiguous()
+        io_binding.bind_output(
+            name=output_name,
+            device_type='cuda',
+            device_id=0,
+            element_type=np.float32,
+            shape=output_shape,
+            buffer_ptr=output_tensor.data_ptr()
+        )
+
     # Warmup
     warmup_iters = 10
     for _ in range(warmup_iters):
@@ -51,9 +84,12 @@ def measure_speed(model, dummy_input, iterations=100, device='cuda'):
             with torch.inference_mode():
                 _ = model(dummy_input.to(device), extract_mode=True)
         else: # ONNX
-            _ = model.run(None, {'input': dummy_input.numpy()})
+            if device == 'cuda':
+                model.run_with_iobinding(io_binding)
+            else:
+                _ = model.run(None, {'input': dummy_input.numpy()})
 
-    if device == 'cuda' and is_torch:
+    if device == 'cuda':
         torch.cuda.synchronize()
 
     start_time = time.time()
@@ -62,13 +98,17 @@ def measure_speed(model, dummy_input, iterations=100, device='cuda'):
             with torch.inference_mode():
                 _ = model(dummy_input.to(device), extract_mode=True)
         else: # ONNX
-            _ = model.run(None, {'input': dummy_input.numpy()})
+            if device == 'cuda':
+                model.run_with_iobinding(io_binding)
+            else:
+                _ = model.run(None, {'input': dummy_input.numpy()})
     
-    if device == 'cuda' and is_torch:
+    if device == 'cuda':
         torch.cuda.synchronize()
         
     end_time = time.time()
     return (end_time - start_time) / iterations * 1000
+
 
 def evaluate_accuracy(model, config, device, benchmark_name):
     """Evaluate accuracy on a specific benchmark dataset."""
@@ -93,14 +133,41 @@ def evaluate_accuracy(model, config, device, benchmark_name):
     is_torch = isinstance(model, torch.nn.Module)
     features = []
     
+    if not is_torch and device == 'cuda':
+        io_binding = model.io_binding()
+        input_name = model.get_inputs()[0].name
+        output_name = model.get_outputs()[0].name
+        feat_dim = config['model']['feature_dim']
+        # Fixed output shape for accuracy evaluation batches
+        # We'll re-bind if the last batch is smaller
+    
     with torch.no_grad():
         for img in tqdm(loader, desc=f"Acc: {benchmark_name}", leave=False):
             if is_torch:
                 feat = model(img.to(device), extract_mode=True)
                 features.append(feat.cpu().numpy())
             else: # ONNX
-                feat = model.run(None, {'input': img.numpy()})[0]
-                features.append(feat)
+                if device == 'cuda':
+                    curr_batch_size = img.shape[0]
+                    img_gpu = img.to(device).contiguous()
+                    
+                    io_binding.bind_input(
+                        name=input_name, device_type='cuda', device_id=0,
+                        element_type=np.float32, shape=img_gpu.shape, buffer_ptr=img_gpu.data_ptr()
+                    )
+                    
+                    out_tensor = torch.empty((curr_batch_size, feat_dim), dtype=torch.float32, device=device).contiguous()
+                    io_binding.bind_output(
+                        name=output_name, device_type='cuda', device_id=0,
+                        element_type=np.float32, shape=out_tensor.shape, buffer_ptr=out_tensor.data_ptr()
+                    )
+                    
+                    model.run_with_iobinding(io_binding)
+                    features.append(out_tensor.cpu().numpy())
+                else:
+                    feat = model.run(None, {'input': img.numpy()})[0]
+                    features.append(feat)
+
     
     features = np.concatenate(features, axis=0)
     features = normalize(features)
