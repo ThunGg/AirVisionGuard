@@ -7,7 +7,7 @@ import sys
 import numpy as np
 
 # Add project root to path to allow imports from models
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import models
 from utils import load_state, log
