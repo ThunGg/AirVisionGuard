@@ -19,10 +19,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 def get_file_size(path):
-    """Get file size in MB."""
-    if not os.path.exists(path):
-        return 0
-    return os.path.getsize(path) / (1024 * 1024)
+    total = os.path.getsize(path)
+    # Also count external data file if it exists
+    data_path = path + ".data"
+    if os.path.exists(data_path):
+        total += os.path.getsize(data_path)
+    return total / (1024 * 1024)
 
 def measure_ram(load_func):
     """Estimate RAM usage by measuring process RSS before and after model loading."""
