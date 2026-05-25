@@ -27,11 +27,13 @@ def main(args):
 
     authorized_embedding = None
     print("Camera opened. Press 'r' to register your face as the authorized user.")
+    print("Press 't' to toggle face lock ON/OFF (turn off face lock).")
     print("Press 'q' to quit.")
 
     missing_frames = 0
     LOCK_THRESHOLD = 15 # lock after 15 consecutive frames without the authorized face
     UNLOCK_THRESHOLD = 0.6 # cosine similarity threshold
+    lock_enabled = True
 
     while True:
         ret, frame = cap.read()
@@ -59,9 +61,7 @@ def main(args):
             # Draw box
             cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
 
-            if authorized_embedding is None:
-                cv2.putText(frame, "Press 'r' to register", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            else:
+            if authorized_embedding is not None:
                 sim = recognizer.compute_similarity(emb, authorized_embedding)
                 if sim > UNLOCK_THRESHOLD:
                     cv2.putText(frame, f"Authorized: {sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
@@ -69,8 +69,16 @@ def main(args):
                 else:
                     cv2.putText(frame, f"Unknown: {sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
+        # Draw status text at the top-left of the frame
+        if authorized_embedding is None:
+            cv2.putText(frame, "Press 'r' to register", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        else:
+            status_text = "Face Lock: ACTIVE (t: turn off)" if lock_enabled else "Face Lock: INACTIVE (t: turn on)"
+            color = (0, 255, 0) if lock_enabled else (0, 0, 255)
+            cv2.putText(frame, status_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
         # Update logic for locking/unlocking
-        if authorized_embedding is not None:
+        if authorized_embedding is not None and lock_enabled:
             if face_found:
                 missing_frames = 0
                 if locker.is_locked:
@@ -79,6 +87,10 @@ def main(args):
                 missing_frames += 1
                 if missing_frames > LOCK_THRESHOLD and not locker.is_locked:
                     locker.lock()
+        elif locker.is_locked:
+            # If lock screen is active but face lock gets disabled, automatically unlock
+            locker.unlock()
+            missing_frames = 0
         
         # Only show preview window if not locked
         if not locker.is_locked:
@@ -95,6 +107,13 @@ def main(args):
             authorized_embedding = emb
             print("Face registered successfully! Monitoring started.")
             # We don't lock immediately.
+            missing_frames = 0
+        elif key == ord('t') and authorized_embedding is not None:
+            lock_enabled = not lock_enabled
+            if not lock_enabled:
+                print("Face lock turned OFF (disabled).")
+            else:
+                print("Face lock turned ON (enabled).")
             missing_frames = 0
 
         # Important to update tkinter events
