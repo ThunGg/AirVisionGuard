@@ -4,3 +4,8 @@ Pillow
 numpy
 scikit-image
 requests
+facenet-pytorch
+torch
+torchvision
+onnx
+onnxscript

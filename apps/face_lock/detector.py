@@ -1,22 +1,80 @@
 import os
-import urllib.request
 import numpy as np
 import cv2
 import onnxruntime as ort
 
-MODEL_URLS = {
-    "pnet.onnx": "https://github.com/kentaroy47/mtcnn-onnx/raw/master/mtcnn/models/pnet.onnx",
-    "rnet.onnx": "https://github.com/kentaroy47/mtcnn-onnx/raw/master/mtcnn/models/rnet.onnx",
-    "onet.onnx": "https://github.com/kentaroy47/mtcnn-onnx/raw/master/mtcnn/models/onet.onnx"
-}
-
 def download_models(model_dir):
     os.makedirs(model_dir, exist_ok=True)
-    for model_name, url in MODEL_URLS.items():
-        model_path = os.path.join(model_dir, model_name)
-        if not os.path.exists(model_path):
-            print(f"Downloading {model_name}...")
-            urllib.request.urlretrieve(url, model_path)
+    pnet_path = os.path.join(model_dir, "pnet.onnx")
+    rnet_path = os.path.join(model_dir, "rnet.onnx")
+    onet_path = os.path.join(model_dir, "onet.onnx")
+
+    if not (os.path.exists(pnet_path) and os.path.exists(rnet_path) and os.path.exists(onet_path)):
+        print("ONNX models not found. Exporting PyTorch MTCNN models to ONNX...")
+        try:
+            import torch
+            from facenet_pytorch import PNet, RNet, ONet
+        except ImportError as e:
+            print("Error: PyTorch or facenet-pytorch is not installed. Cannot export models.")
+            raise e
+
+        device = torch.device("cpu")
+
+        if not os.path.exists(pnet_path):
+            print("Exporting PNet to ONNX...")
+            pnet = PNet(pretrained=True).eval().to(device)
+            dummy_input = torch.randn(1, 3, 12, 12).to(device)
+            torch.onnx.export(
+                pnet,
+                dummy_input,
+                pnet_path,
+                opset_version=14,
+                input_names=["input"],
+                output_names=["output_1", "output_2"],
+                dynamic_axes={
+                    "input": {0: "batch_size", 2: "height", 3: "width"},
+                    "output_1": {0: "batch_size", 2: "height", 3: "width"},
+                    "output_2": {0: "batch_size", 2: "height", 3: "width"}
+                }
+            )
+
+        if not os.path.exists(rnet_path):
+            print("Exporting RNet to ONNX...")
+            rnet = RNet(pretrained=True).eval().to(device)
+            dummy_input = torch.randn(1, 3, 24, 24).to(device)
+            torch.onnx.export(
+                rnet,
+                dummy_input,
+                rnet_path,
+                opset_version=14,
+                input_names=["input"],
+                output_names=["output_1", "output_2"],
+                dynamic_axes={
+                    "input": {0: "batch_size"},
+                    "output_1": {0: "batch_size"},
+                    "output_2": {0: "batch_size"}
+                }
+            )
+
+        if not os.path.exists(onet_path):
+            print("Exporting ONet to ONNX...")
+            onet = ONet(pretrained=True).eval().to(device)
+            dummy_input = torch.randn(1, 3, 48, 48).to(device)
+            torch.onnx.export(
+                onet,
+                dummy_input,
+                onet_path,
+                opset_version=14,
+                input_names=["input"],
+                output_names=["output_1", "output_2", "output_3"],
+                dynamic_axes={
+                    "input": {0: "batch_size"},
+                    "output_1": {0: "batch_size"},
+                    "output_2": {0: "batch_size"},
+                    "output_3": {0: "batch_size"}
+                }
+            )
+        print("All MTCNN models exported to ONNX successfully.")
 
 def nms(boxes, threshold, method):
     if boxes.size == 0:
@@ -42,7 +100,7 @@ def nms(boxes, threshold, method):
         w = np.maximum(0.0, xx2 - xx1 + 1)
         h = np.maximum(0.0, yy2 - yy1 + 1)
         inter = w * h
-        if method is == 'Min':
+        if method == 'Min':
             o = inter / np.minimum(area[i], area[idx])
         else:
             o = inter / (area[i] + area[idx] - inter)
@@ -167,6 +225,7 @@ class MTCNNDetector:
             out = self.pnet.run(None, {self.pnet.get_inputs()[0].name: im_data})
             out0 = out[0][0]
             out1 = out[1][0]
+            out0 = np.transpose(out0, (1, 2, 0))
             boxes, _ = generateBoundingBox(out1[1, :, :], out0, scale, self.threshold[0])
 
             if boxes.size > 0:
