@@ -6,14 +6,7 @@ import argparse
 import yaml
 import sys
 import psutil
-
-# pyRAPL measures CPU/DRAM energy via Intel RAPL (Linux-only).
-# Import is optional; the script falls back gracefully on unsupported platforms.
-try:
-    import pyRAPL
-    _PYRAPL_AVAILABLE = True
-except ImportError:
-    _PYRAPL_AVAILABLE = False
+import threading
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -25,6 +18,72 @@ from evaluation import evaluate
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+# ---------------------------------------------------------------------------
+# pynvml helpers
+# ---------------------------------------------------------------------------
+_nvml_available = False
+_nvml_handle = None
+
+def _init_nvml(device_index: int = 0) -> bool:
+    """Attempt to initialise pynvml. Returns True on success."""
+    global _nvml_available, _nvml_handle
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
+        _nvml_available = True
+    except Exception:
+        _nvml_available = False
+        _nvml_handle = None
+    return _nvml_available
+
+
+def _shutdown_nvml():
+    """Shutdown pynvml if it was initialised."""
+    if _nvml_available:
+        try:
+            import pynvml
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+
+
+class _PowerSampler:
+    """Background thread that polls NVML power usage at a fixed interval."""
+
+    def __init__(self, interval_s: float = 0.05):
+        self.interval_s = interval_s
+        self.samples: list[float] = []
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._stop_event.clear()
+        self.samples.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join()
+
+    def _run(self):
+        import pynvml
+        while not self._stop_event.is_set():
+            try:
+                mw = pynvml.nvmlDeviceGetPowerUsage(_nvml_handle)  # milliwatts
+                self.samples.append(mw / 1000.0)  # convert to watts
+            except Exception:
+                pass
+            time.sleep(self.interval_s)
+
+    @property
+    def avg_power_w(self) -> float | None:
+        return float(np.mean(self.samples)) if self.samples else None
+
+
+# ---------------------------------------------------------------------------
 
 def get_file_size(path):
     total = os.path.getsize(path)
@@ -50,105 +109,13 @@ def measure_ram(load_func):
     
     return model, max(0, mem_after - mem_before)
 
-def _setup_pyrapl():
-    """Initialize pyRAPL once; return True on success."""
-    if not _PYRAPL_AVAILABLE:
-        return False
-    try:
-        pyRAPL.setup()
-        return True
-    except Exception as exc:
-        print(f"[pyRAPL] Setup failed ({exc}). Power metrics will be skipped.")
-        return False
-
-
-_PYRAPL_READY = None  # lazily initialized
-
-
-def measure_power(model, dummy_input, iterations=100, device='cuda'):
-    """Measure energy consumption using pyRAPL over *iterations* inferences.
-
-    Returns:
-        (energy_pkg_J, avg_power_W) as floats, or (None, None) if unavailable.
-        energy_pkg_J  – total CPU-package energy in Joules for all iterations.
-        avg_power_W   – average power draw (energy / elapsed time) in Watts.
-    """
-    global _PYRAPL_READY
-    if _PYRAPL_READY is None:
-        _PYRAPL_READY = _setup_pyrapl()
-    if not _PYRAPL_READY:
-        return None, None
-
-    is_torch = isinstance(model, torch.nn.Module)
-
-    # Prepare IOBinding once for ONNX + CUDA
-    io_binding = None
-    if not is_torch and device == 'cuda':
-        io_binding = model.io_binding()
-        input_name = model.get_inputs()[0].name
-        output_name = model.get_outputs()[0].name
-        input_tensor = dummy_input.to(device).contiguous()
-        io_binding.bind_input(
-            name=input_name, device_type='cuda', device_id=0,
-            element_type=np.float32, shape=input_tensor.shape,
-            buffer_ptr=input_tensor.data_ptr()
-        )
-        output_shape = list(model.get_outputs()[0].shape)
-        if isinstance(output_shape[0], str) or output_shape[0] < 0:
-            output_shape[0] = input_tensor.shape[0]
-        output_tensor = torch.empty(output_shape, dtype=torch.float32, device=device).contiguous()
-        io_binding.bind_output(
-            name=output_name, device_type='cuda', device_id=0,
-            element_type=np.float32, shape=output_shape,
-            buffer_ptr=output_tensor.data_ptr()
-        )
-
-    def _run_inference():
-        if is_torch:
-            with torch.inference_mode():
-                model(dummy_input.to(device), extract_mode=True)
-        else:
-            if device == 'cuda' and io_binding is not None:
-                model.run_with_iobinding(io_binding)
-            else:
-                model.run(None, {'input': dummy_input.numpy()})
-
-    # Warmup (not measured)
-    for _ in range(min(10, iterations)):
-        _run_inference()
-    if device == 'cuda':
-        torch.cuda.synchronize()
-
-    try:
-        meter = pyRAPL.Measurement('power_eval')
-        meter.begin()
-        t_start = time.time()
-        for _ in range(iterations):
-            _run_inference()
-        if device == 'cuda':
-            torch.cuda.synchronize()
-        t_end = time.time()
-        meter.end()
-    except Exception as exc:
-        print(f"[pyRAPL] Measurement failed ({exc}). Power metrics will be skipped.")
-        return None, None
-
-    elapsed = t_end - t_start
-    result = meter.result
-
-    # result.pkg is a list of per-socket energies in µJ; sum across sockets.
-    if result is None or result.pkg is None:
-        return None, None
-
-    energy_pkg_uJ = sum(e for e in result.pkg if e is not None)
-    energy_pkg_J = energy_pkg_uJ / 1e6
-    avg_power_W = energy_pkg_J / elapsed if elapsed > 0 else 0.0
-
-    return energy_pkg_J, avg_power_W
-
-
 def measure_speed(model, dummy_input, iterations=100, device='cuda'):
-    """Measure inference speed in milliseconds."""
+    """Measure inference speed (ms) and average GPU power (W).
+    
+    Returns:
+        tuple[float, float | None]: (latency_ms, avg_power_w)
+            avg_power_w is None when pynvml is unavailable or device is CPU.
+    """
     is_torch = isinstance(model, torch.nn.Module)
     
     if not is_torch and device == 'cuda':
@@ -199,6 +166,12 @@ def measure_speed(model, dummy_input, iterations=100, device='cuda'):
     if device == 'cuda':
         torch.cuda.synchronize()
 
+    # Start power sampling (GPU only)
+    power_sampler = None
+    if device == 'cuda' and _nvml_available:
+        power_sampler = _PowerSampler(interval_s=0.05)
+        power_sampler.start()
+
     start_time = time.time()
     for _ in range(iterations):
         if is_torch:
@@ -214,7 +187,13 @@ def measure_speed(model, dummy_input, iterations=100, device='cuda'):
         torch.cuda.synchronize()
         
     end_time = time.time()
-    return (end_time - start_time) / iterations * 1000
+
+    avg_power_w = None
+    if power_sampler is not None:
+        power_sampler.stop()
+        avg_power_w = power_sampler.avg_power_w
+
+    return (end_time - start_time) / iterations * 1000, avg_power_w
 
 
 def evaluate_accuracy(model, config, device, benchmark_name):
@@ -335,10 +314,18 @@ def main():
 
     pytorch_model, pt_ram = measure_ram(load_pytorch)
     pt_size = get_file_size(args.pth_path)
+
+    # Initialise NVML once (before any speed measurements)
+    nvml_ok = False
+    if args.device == 'cuda':
+        nvml_ok = _init_nvml(device_index=0)
+        if nvml_ok:
+            log("pynvml initialised — GPU power usage will be measured.")
+        else:
+            log("pynvml not available — GPU power measurement skipped.")
+
     log("Measuring PyTorch speed...")
-    pt_speed = measure_speed(pytorch_model, dummy_input, iterations=args.iterations, device=args.device)
-    log("Measuring PyTorch power usage...")
-    pt_energy, pt_power = measure_power(pytorch_model, dummy_input, iterations=args.iterations, device=args.device)
+    pt_speed, pt_power = measure_speed(pytorch_model, dummy_input, iterations=args.iterations, device=args.device)
 
     # --- ONNX Model ---
     log("Loading ONNX model...")
@@ -352,22 +339,17 @@ def main():
     onnx_session, onnx_ram = measure_ram(lambda: load_onnx(args.onnx_path))
     onnx_size = get_file_size(args.onnx_path)
     log("Measuring ONNX speed...")
-    onnx_speed = measure_speed(onnx_session, dummy_input, iterations=args.iterations, device=args.device)
-    log("Measuring ONNX power usage...")
-    onnx_energy, onnx_power = measure_power(onnx_session, dummy_input, iterations=args.iterations, device=args.device)
+    onnx_speed, onnx_power = measure_speed(onnx_session, dummy_input, iterations=args.iterations, device=args.device)
 
     # --- Quantized ONNX Model ---
-    quant_session, quant_ram, quant_size, quant_speed = None, None, None, None
-    quant_energy, quant_power = None, None
+    quant_session, quant_ram, quant_size, quant_speed, quant_power = None, None, None, None, None
     if args.quant_path and os.path.exists(args.quant_path):
         log("Loading Quantized ONNX model...")
         # Quantized models are typically best on CPU
         quant_session, quant_ram = measure_ram(lambda: load_onnx(args.quant_path))
         quant_size = get_file_size(args.quant_path)
         log("Measuring Quantized ONNX speed...")
-        quant_speed = measure_speed(quant_session, dummy_input, iterations=args.iterations, device=args.device)
-        log("Measuring Quantized ONNX power usage...")
-        quant_energy, quant_power = measure_power(quant_session, dummy_input, iterations=args.iterations, device=args.device)
+        quant_speed, quant_power = measure_speed(quant_session, dummy_input, iterations=args.iterations, device=args.device)
 
     # --- Accuracy Evaluation ---
     benchmarks = config['test'].get('benchmark', [])
@@ -420,29 +402,20 @@ def main():
     row += f" | {format_change(pt_fps, onnx_fps)}"
     log(row)
 
-    # --- Power / Energy Metrics (pyRAPL) ---
-    _power_available = pt_energy is not None
-    if _power_available:
-        log("-" * 95)
+    # GPU Power (only when NVML is available)
+    if nvml_ok and (pt_power is not None or onnx_power is not None):
+        def _fmt_power(val):
+            return f"{val:>12.2f}" if val is not None else f"{'N/A':>12}"
 
-        def log_power_metric(name, pt_val, onnx_val, quant_val, fmt=".4f"):
-            """Like log_metric but handles None values gracefully."""
-            def _fmt(v):
-                return f"{v:>12{fmt}}" if v is not None else f"{'N/A':>12}"
-            row = f"{name:<25} | {_fmt(pt_val)} | {_fmt(onnx_val)}"
-            if quant_session:
-                row += f" | {_fmt(quant_val)}"
-            # Change column: ONNX vs PyTorch
-            if pt_val and onnx_val:
-                row += f" | {format_change(pt_val, onnx_val)}"
-            else:
-                row += f" | {'N/A':>14}"
-            log(row)
-
-        log_power_metric('Energy/pkg (J)', pt_energy, onnx_energy, quant_energy)
-        log_power_metric('Avg Power (W)', pt_power, onnx_power, quant_power)
-    else:
-        log("[pyRAPL] Power metrics unavailable (requires Linux + Intel RAPL support).")
+        row = f"{'GPU Power (W)':<25} | {_fmt_power(pt_power)} | {_fmt_power(onnx_power)}"
+        if quant_session:
+            row += f" | {_fmt_power(quant_power)}"
+        # Power change: lower is better, so we still report the ratio
+        if pt_power and onnx_power:
+            row += f" | {format_change(pt_power, onnx_power)}"
+        else:
+            row += " | N/A"
+        log(row)
 
     # Accuracy Metrics
     if args.eval_acc:
@@ -465,6 +438,10 @@ def main():
     log(f"Inference device: {args.device}")
     if args.device == 'cuda':
         log(f"Available ORT Providers: {ort.get_available_providers()}")
+        if nvml_ok:
+            log("Note: GPU Power (W) is the average power draw during the timed inference loop.")
+
+    _shutdown_nvml()
 
 
 if __name__ == '__main__':
