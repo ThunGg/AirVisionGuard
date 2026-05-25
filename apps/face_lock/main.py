@@ -10,7 +10,7 @@ from lock_screen import ScreenLocker
 from utils import align_face, preprocess_face
 
 def main(args):
-    print("Initializing components...")
+    print("Initializing components (using DeepFace Fast MTCNN detector)...")
     if not os.path.exists(args.model):
         print(f"Error: Face recognition model not found at {args.model}")
         print("Please provide a valid ONNX model path using --model")
@@ -25,9 +25,13 @@ def main(args):
         print("Error: Could not open camera.")
         sys.exit(1)
 
-    authorized_embedding = None
-    print("Camera opened. Press 'r' to register your face as the authorized user.")
-    print("Press 't' to toggle face lock ON/OFF (turn off face lock).")
+    authorized_embeddings = []
+    registration_steps = ["Close up", "Medium distance", "Far distance"]
+    print("Camera opened. Face registration required:")
+    for step in registration_steps:
+        print(f"  - {step}")
+    print("Press 'r' to register the face at each distance step-by-step.")
+    print("Press 't' to toggle face lock ON/OFF once registered.")
     print("Press 'q' to quit.")
 
     missing_frames = 0
@@ -61,24 +65,27 @@ def main(args):
             # Draw box
             cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
 
-            if authorized_embedding is not None:
-                sim = recognizer.compute_similarity(emb, authorized_embedding)
-                if sim > UNLOCK_THRESHOLD:
-                    cv2.putText(frame, f"Authorized: {sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            if len(authorized_embeddings) == len(registration_steps):
+                # Check similarity against all registered embeddings and use the maximum match
+                similarities = [recognizer.compute_similarity(emb, auth_emb) for auth_emb in authorized_embeddings]
+                max_sim = max(similarities)
+                if max_sim > UNLOCK_THRESHOLD:
+                    cv2.putText(frame, f"Authorized: {max_sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
                     face_found = True
                 else:
-                    cv2.putText(frame, f"Unknown: {sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                    cv2.putText(frame, f"Unknown: {max_sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
         # Draw status text at the top-left of the frame
-        if authorized_embedding is None:
-            cv2.putText(frame, "Press 'r' to register", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        if len(authorized_embeddings) < len(registration_steps):
+            current_step = registration_steps[len(authorized_embeddings)]
+            cv2.putText(frame, f"Register: {current_step} ('r')", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         else:
             status_text = "Face Lock: ACTIVE (t: turn off)" if lock_enabled else "Face Lock: INACTIVE (t: turn on)"
             color = (0, 255, 0) if lock_enabled else (0, 0, 255)
             cv2.putText(frame, status_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
         # Update logic for locking/unlocking
-        if authorized_embedding is not None and lock_enabled:
+        if len(authorized_embeddings) == len(registration_steps) and lock_enabled:
             if face_found:
                 missing_frames = 0
                 if locker.is_locked:
@@ -103,12 +110,15 @@ def main(args):
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif key == ord('r') and boxes.shape[0] > 0 and authorized_embedding is None:
-            authorized_embedding = emb
-            print("Face registered successfully! Monitoring started.")
+        elif key == ord('r') and boxes.shape[0] > 0 and len(authorized_embeddings) < len(registration_steps):
+            authorized_embeddings.append(emb)
+            step_name = registration_steps[len(authorized_embeddings) - 1]
+            print(f"Face registered successfully for {step_name}!")
+            if len(authorized_embeddings) == len(registration_steps):
+                print("All face distances registered successfully! Monitoring started.")
             # We don't lock immediately.
             missing_frames = 0
-        elif key == ord('t') and authorized_embedding is not None:
+        elif key == ord('t') and len(authorized_embeddings) == len(registration_steps):
             lock_enabled = not lock_enabled
             if not lock_enabled:
                 print("Face lock turned OFF (disabled).")
