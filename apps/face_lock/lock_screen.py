@@ -16,6 +16,7 @@ class ScreenLocker:
         self.root.bind("<Escape>", self.disable_event)
         self.root.bind("<Alt-F4>", self.disable_event)
         self.root.bind("<Alt-Tab>", self.disable_event)
+        self.root.bind("<FocusOut>", self.on_focus_out)
 
         self.canvas = tk.Canvas(self.root, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -24,6 +25,11 @@ class ScreenLocker:
 
     def disable_event(self, event=None):
         return "break"
+
+    def on_focus_out(self, event=None):
+        if self.is_locked:
+            self.root.lift()
+            self.root.focus_force()
 
     def lock(self):
         if not self.is_locked:

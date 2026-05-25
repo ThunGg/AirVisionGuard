@@ -126,7 +126,10 @@ def main(args):
                 print("Face lock turned ON (enabled).")
             missing_frames = 0
 
-        # Important to update tkinter events
+        # Important to update tkinter events and prevent Alt+Tab / focus loss bypasses
+        if locker.is_locked:
+            locker.root.lift()
+            locker.root.focus_force()
         locker.update()
 
     cap.release()
