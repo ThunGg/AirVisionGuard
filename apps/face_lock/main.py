@@ -35,11 +35,14 @@ def main(args):
     print("Press 'q' to quit.")
 
     missing_frames = 0
-    LOCK_THRESHOLD = 15 # lock after 15 consecutive frames without the authorized face
-    UNLOCK_THRESHOLD = 0.6 # cosine similarity threshold
+    LOCK_THRESHOLD = 15  # lock after 15 consecutive frames without the authorized face
+    UNLOCK_THRESHOLD = 0.6  # cosine similarity threshold
     lock_enabled = True
+    TARGET_FPS = 10  # cap processing rate to reduce CPU usage
+    FRAME_DURATION = 1.0 / TARGET_FPS
 
     while True:
+        frame_start = time.time()
         ret, frame = cap.read()
         if not ret:
             break
@@ -107,7 +110,10 @@ def main(args):
             if cv2.getWindowProperty("Face Lock Registration / Preview", cv2.WND_PROP_VISIBLE) >= 1:
                 cv2.destroyWindow("Face Lock Registration / Preview")
 
-        key = cv2.waitKey(1) & 0xFF
+        # Throttle to TARGET_FPS to reduce CPU usage
+        elapsed = time.time() - frame_start
+        sleep_ms = max(1, int((FRAME_DURATION - elapsed) * 1000))
+        key = cv2.waitKey(sleep_ms) & 0xFF
         if key == ord('q'):
             break
         elif key == ord('r') and boxes.shape[0] > 0 and len(authorized_embeddings) < len(registration_steps):
