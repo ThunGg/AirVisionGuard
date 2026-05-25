@@ -10,7 +10,14 @@ import psutil
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import models
+import pyRAPL
+
+# Initialize pyRAPL if available
+try:
+    pyRAPL.setup(devices=[pyRAPL.Device.PKG, pyRAPL.Device.DRAM])
+except Exception:
+    # If pyRAPL not installed or setup fails, continue without power measurement
+    pyRAPL = None
 from utils import load_state, log, normalize
 from datasets import BinDataset
 from evaluation import evaluate
@@ -42,7 +49,48 @@ def measure_ram(load_func):
     
     return model, max(0, mem_after - mem_before)
 
-def measure_speed(model, dummy_input, iterations=100, device='cuda'):
+def measure_energy(model, dummy_input, iterations=100, device='cuda'):
+    """Measure average energy consumption per inference using pyRAPL.
+    Returns energy in Joules averaged over the iterations.
+    """
+    if pyRAPL is None:
+        return None
+    is_torch = isinstance(model, torch.nn.Module)
+    # Warmup similar to speed measurement
+    warmup_iters = 10
+    for _ in range(warmup_iters):
+        if is_torch:
+            with torch.inference_mode():
+                _ = model(dummy_input.to(device), extract_mode=True)
+        else:
+            if device == 'cuda':
+                # Prepare IOBinding as in speed measurement
+                io_binding = model.io_binding()
+                input_name = model.get_inputs()[0].name
+                output_name = model.get_outputs()[0].name
+                input_tensor = dummy_input.to(device).contiguous()
+                io_binding.bind_input(name=input_name, device_type='cuda', device_id=0,
+                                    element_type=np.float32, shape=input_tensor.shape, buffer_ptr=input_tensor.data_ptr())
+                # Bind output placeholder
+                out_tensor = torch.empty((iterations, model.get_outputs()[0].shape[-1]), dtype=torch.float32, device=device).contiguous()
+                io_binding.bind_output(name=output_name, device_type='cuda', device_id=0,
+                                        element_type=np.float32, shape=out_tensor.shape, buffer_ptr=out_tensor.data_ptr())
+                model.run_with_iobinding(io_binding)
+            else:
+                model.run(None, {'input': dummy_input.numpy()})
+    # Measurement
+    with pyRAPL.Measurement('inference') as m:
+        for _ in range(iterations):
+            if is_torch:
+                with torch.inference_mode():
+                    _ = model(dummy_input.to(device), extract_mode=True)
+            else:
+                if device == 'cuda':
+                    model.run_with_iobinding(io_binding)
+                else:
+                    model.run(None, {'input': dummy_input.numpy()})
+    total_energy = m.result.energy  # Joules
+    return total_energy / iterations
     """Measure inference speed in milliseconds."""
     is_torch = isinstance(model, torch.nn.Module)
     
@@ -185,8 +233,8 @@ def main():
     parser.add_argument('--onnx-path', type=str, required=True, help='Path to exported .onnx file')
     parser.add_argument('--quant-path', type=str, default=None, help='Path to quantized .onnx file (optional)')
     parser.add_argument('--batch-size', type=int, default=1, help='Batch size for testing')
-    parser.add_argument('--iterations', type=int, default=100, help='Number of iterations for speed test')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device for inference')
+    parser.add_argument('--measure-power', action='store_true', help='Measure energy consumption using pyRAPL')
     parser.add_argument('--eval-acc', action='store_true', help='Evaluate accuracy on benchmarks')
     
     args = parser.parse_args()
@@ -244,6 +292,13 @@ def main():
 
     onnx_session, onnx_ram = measure_ram(lambda: load_onnx(args.onnx_path))
     onnx_size = get_file_size(args.onnx_path)
+    # Measure power consumption if requested and pyRAPL is available
+    pt_energy = None
+    onnx_energy = None
+    quant_energy = None
+    if args.measure_power and pyRAPL is not None:
+        pt_energy = measure_energy(pytorch_model, dummy_input, iterations=args.iterations, device=args.device)
+        onnx_energy = measure_energy(onnx_session, dummy_input, iterations=args.iterations, device=args.device)
     log("Measuring ONNX speed...")
     onnx_speed = measure_speed(onnx_session, dummy_input, iterations=args.iterations, device=args.device)
 
@@ -296,6 +351,8 @@ def main():
     log_metric('Disk Size (MB)', pt_size, onnx_size, quant_size)
     log_metric('RAM Added (MB)', pt_ram, onnx_ram, quant_ram)
     log_metric('Latency (ms)', pt_speed, onnx_speed, quant_speed)
+    # Energy consumption (Joules per inference)
+    log_metric('Energy (J)', pt_energy if pt_energy is not None else 0.0, onnx_energy if onnx_energy is not None else 0.0, quant_energy if quant_energy is not None else 0.0)
     
     # Throughput
     pt_fps = (1000 / pt_speed) * args.batch_size if pt_speed > 0 else 0
