@@ -35,7 +35,7 @@ class ScreenLocker:
         if not self.is_locked:
             # Capture screen, blur it
             screen = ImageGrab.grab()
-            blurred_screen = screen.filter(ImageFilter.GaussianBlur(radius=15))
+            blurred_screen = screen.filter(ImageFilter.GaussianBlur(radius=80))
             self.bg_image_tk = ImageTk.PhotoImage(blurred_screen)
             
             self.canvas.create_image(0, 0, image=self.bg_image_tk, anchor="nw")
