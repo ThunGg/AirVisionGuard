@@ -14,3 +14,4 @@ onnx
 onnxruntime-gpu
 psutil
 onnxscript
+pyRAPL
