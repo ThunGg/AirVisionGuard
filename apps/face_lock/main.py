@@ -51,6 +51,12 @@ def main(args):
     lock_enabled = True
     TARGET_FPS = 10  # cap processing rate to reduce CPU usage
     FRAME_DURATION = 1.0 / TARGET_FPS
+    DETECT_EVERY_N = 3  # only run detection every Nth frame
+    SKIP_AFTER_AUTH = 5  # skip recognition for N frames after authorization
+    frame_count = 0
+    skip_recognition_count = 0
+    cached_boxes = None
+    cached_landmarks = None
 
     while True:
         frame_start = time.time()
@@ -58,8 +64,14 @@ def main(args):
         if not ret:
             break
 
-        boxes, landmarks = detector.detect(frame)
-        
+        # Run face detection only every Nth frame to reduce CPU load
+        if frame_count % DETECT_EVERY_N == 0 or cached_boxes is None:
+            boxes, landmarks = detector.detect(frame)
+            cached_boxes, cached_landmarks = boxes, landmarks
+        else:
+            boxes, landmarks = cached_boxes, cached_landmarks
+        frame_count += 1
+
         face_found = False
 
         if boxes.shape[0] > 0:
@@ -69,25 +81,32 @@ def main(args):
             box = boxes[max_idx]
             landmark = landmarks[max_idx]
 
-            # Align and preprocess
-            aligned_face = align_face(frame, box, landmark)
-            img_tensor = preprocess_face(aligned_face)
-
-            # Get embedding
-            emb = recognizer.get_embedding(img_tensor)
-
             # Draw box
             cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
 
-            if len(authorized_embeddings) == len(registration_steps):
-                # Check similarity against all registered embeddings and use the maximum match
-                similarities = [recognizer.compute_similarity(emb, auth_emb) for auth_emb in authorized_embeddings]
-                max_sim = max(similarities)
-                if max_sim > UNLOCK_THRESHOLD:
-                    cv2.putText(frame, f"Authorized: {max_sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-                    face_found = True
-                else:
-                    cv2.putText(frame, f"Unknown: {max_sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+            # Skip expensive recognition if recently authorized
+            if skip_recognition_count > 0 and len(authorized_embeddings) == len(registration_steps):
+                skip_recognition_count -= 1
+                face_found = True
+                cv2.putText(frame, "Authorized (cached)", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            else:
+                # Align and preprocess
+                aligned_face = align_face(frame, box, landmark)
+                img_tensor = preprocess_face(aligned_face)
+
+                # Get embedding
+                emb = recognizer.get_embedding(img_tensor)
+
+                if len(authorized_embeddings) == len(registration_steps):
+                    # Check similarity against all registered embeddings and use the maximum match
+                    similarities = [recognizer.compute_similarity(emb, auth_emb) for auth_emb in authorized_embeddings]
+                    max_sim = max(similarities)
+                    if max_sim > UNLOCK_THRESHOLD:
+                        cv2.putText(frame, f"Authorized: {max_sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                        face_found = True
+                        skip_recognition_count = SKIP_AFTER_AUTH
+                    else:
+                        cv2.putText(frame, f"Unknown: {max_sim:.2f}", (int(box[0]), int(box[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
         # Draw status text at the top-left of the frame
         if len(authorized_embeddings) < len(registration_steps):
@@ -124,7 +143,12 @@ def main(args):
         # Throttle to TARGET_FPS to reduce CPU usage
         elapsed = time.time() - frame_start
         sleep_ms = max(1, int((FRAME_DURATION - elapsed) * 1000))
-        key = cv2.waitKey(sleep_ms) & 0xFF
+        # Use time.sleep when locked — cv2.waitKey becomes a no-op without a window
+        if locker.is_locked:
+            time.sleep(sleep_ms / 1000.0)
+            key = 0xFF
+        else:
+            key = cv2.waitKey(sleep_ms) & 0xFF
         if key == ord('q'):
             break
         elif key == ord('r') and boxes.shape[0] > 0 and len(authorized_embeddings) < len(registration_steps):

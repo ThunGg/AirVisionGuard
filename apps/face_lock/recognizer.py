@@ -3,7 +3,10 @@ import numpy as np
 
 class FaceRecognizer:
     def __init__(self, model_path):
-        self.session = ort.InferenceSession(model_path)
+        sess_options = ort.SessionOptions()
+        sess_options.intra_op_num_threads = 2
+        sess_options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(model_path, sess_options)
         self.input_name = self.session.get_inputs()[0].name
         
     def get_embedding(self, img_tensor):

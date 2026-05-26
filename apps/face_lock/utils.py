@@ -1,6 +1,10 @@
+import warnings
 import numpy as np
 import cv2
 from skimage import transform as trans
+
+# Suppress the skimage SimilarityTransform deprecation warning
+warnings.filterwarnings("ignore", message=".*estimate.*deprecated.*", category=FutureWarning)
 
 # Standard landmarks for 112x112 face alignment
 arcface_src = np.array([
@@ -11,11 +15,13 @@ arcface_src = np.array([
     [70.7299, 92.2041]
 ], dtype=np.float32)
 
+# Reuse a single transform instance to avoid per-call allocation overhead
+_tform = trans.SimilarityTransform()
+
 def estimate_norm(lmk, image_size=112):
     assert lmk.shape == (5, 2)
-    tform = trans.SimilarityTransform()
-    tform.estimate(lmk, arcface_src)
-    M = tform.params[0:2, :]
+    _tform.estimate(lmk, arcface_src)
+    M = _tform.params[0:2, :]
     return M
 
 def align_face(img, bbox, landmark, image_size=112):
