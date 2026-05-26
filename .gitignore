@@ -15,3 +15,6 @@ tensorboard_env.sh
 source.sh
 TODO
 experiments/**/*rep
+apps/face_lock/.quant_tmp/
+apps/face_lock/models/model_quant*.onnx
+apps/face_lock/models/*_source.onnx

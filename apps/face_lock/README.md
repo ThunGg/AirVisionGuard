@@ -4,11 +4,11 @@ A real-time, face-recognition-based screen locker for Windows. The application c
 
 ## How It Works
 
-1. **Detection** — `YuNetDetector` (default) or `MTCNNDetector` (fallback) detects faces and 5-point facial landmarks in each webcam frame. YuNet is faster on CPU; MTCNN supports GPU acceleration via CUDA.
-2. **Alignment & Preprocessing** — The detected face is geometrically aligned to ArcFace's canonical 112×112 landmark template using a similarity transform.
-3. **Recognition** — The aligned face is passed through an ONNX face recognition model (`FaceRecognizer`) that produces a normalized 512-d embedding vector.
-4. **Matching** — Cosine similarity is computed between the live embedding and all registered embeddings. A match is declared when the best similarity exceeds the threshold (default `0.6`).
-5. **Lock / Unlock** — `ScreenLocker` (Tkinter fullscreen overlay) locks the screen when the authorized face has been missing for 3 consecutive frames and unlocks it the moment the face is recognized again.
+1. **Detection** â€” `YuNetDetector` (default) or `MTCNNDetector` (fallback) detects faces and 5-point facial landmarks in each webcam frame. YuNet is faster on CPU; MTCNN supports GPU acceleration via CUDA.
+2. **Alignment & Preprocessing** â€” The detected face is geometrically aligned to ArcFace's canonical 112Ã—112 landmark template using a similarity transform.
+3. **Recognition** â€” The aligned face is passed through an ONNX face recognition model (`FaceRecognizer`) that produces a normalized 512-d embedding vector.
+4. **Matching** â€” Cosine similarity is computed between the live embedding and all registered embeddings. A match is declared when the best similarity exceeds the threshold (default `0.6`).
+5. **Lock / Unlock** â€” `ScreenLocker` (Tkinter fullscreen overlay) locks the screen when the authorized face has been missing for 3 consecutive frames and unlocks it the moment the face is recognized again.
 
 ---
 
@@ -90,6 +90,37 @@ python main.py --detector yunet --detector-model C:/models/yunet.onnx
 
 ---
 
+## Benchmarking
+
+Use `benchmark_model_variants.py` to compare the **recognition backend used by Face Lock** across the original PyTorch checkpoint, the ONNX export, and the quantized ONNX export.
+
+The script reports:
+- Disk size
+- RAM added after model/session load
+- Latency
+- Throughput
+- GPU power (when running on CUDA with `nvidia-smi` available)
+
+```bash
+.venv\Scripts\python benchmark_model_variants.py
+```
+
+Useful options:
+
+```bash
+# Short CPU smoke test
+.venv\Scripts\python benchmark_model_variants.py --device cpu --iterations 20 --warmup 5
+
+# Prefer CUDA when available
+.venv\Scripts\python benchmark_model_variants.py --device cuda --quant-device same
+```
+
+Notes:
+- If the quantized ONNX file does not exist yet, the script creates it automatically at `apps/face_lock/models/model_quant.onnx`.
+- The benchmark targets the face-recognition model variants that drive Face Lock. Webcam capture, detection, and lock-screen UI are held constant and are not part of this comparison.
+
+---
+
 ## Interactive Controls
 
 Once the preview window opens, use the following keyboard shortcuts:
@@ -107,9 +138,9 @@ Once the preview window opens, use the following keyboard shortcuts:
 Registration is required before the lock activates. The app captures embeddings at **three distances** to improve robustness across varying positions:
 
 ```
-Step 1 — Close up     →  press 'r'
-Step 2 — Medium distance →  press 'r'
-Step 3 — Far distance    →  press 'r'
+Step 1 â€” Close up     â†’  press 'r'
+Step 2 â€” Medium distance â†’  press 'r'
+Step 3 â€” Far distance    â†’  press 'r'
 ```
 
 The on-screen overlay will prompt you for each step. Once all three embeddings are saved, face monitoring begins automatically.
@@ -129,7 +160,7 @@ The on-screen overlay will prompt you for each step. Once all three embeddings a
 
 When locked, the screen overlay:
 - Takes a blurred screenshot as the background.
-- Displays **"Screen Locked — Waiting for authorized face..."**
+- Displays **"Screen Locked â€” Waiting for authorized face..."**
 - Blocks `Esc`, `Alt+F4`, and `Alt+Tab` via Tkinter event interception.
 - Continuously re-lifts itself to the foreground to resist focus loss.
 
@@ -141,15 +172,16 @@ When locked, the screen overlay:
 
 ```
 apps/face_lock/
-├── main.py           # Entry point; orchestrates detection, recognition, and lock logic
-├── detector.py       # YuNetDetector (default) and MTCNNDetector — face & landmark detection
-├── recognizer.py     # FaceRecognizer — ONNX inference + cosine similarity
-├── lock_screen.py    # ScreenLocker — Tkinter fullscreen lock overlay
-├── utils.py          # align_face(), preprocess_face() — ArcFace preprocessing helpers
-├── requirements.txt  # Python dependencies
-└── models/
-    ├── yunet/        # YuNet ONNX model (auto-downloaded on first run)
-    └── mtcnn/        # Auto-downloaded MTCNN weights (on first run)
+â”œâ”€â”€ main.py                        # Entry point; orchestrates detection, recognition, and lock logic
+â”œâ”€â”€ benchmark_model_variants.py   # Compare original, ONNX, and quantized ONNX recognition backends
+â”œâ”€â”€ detector.py                    # YuNetDetector (default) and MTCNNDetector â€” face & landmark detection
+â”œâ”€â”€ recognizer.py                  # FaceRecognizer â€” ONNX inference + cosine similarity
+â”œâ”€â”€ lock_screen.py                 # ScreenLocker â€” Tkinter fullscreen lock overlay
+â”œâ”€â”€ utils.py                       # align_face(), preprocess_face() â€” ArcFace preprocessing helpers
+â”œâ”€â”€ requirements.txt               # Python dependencies
+â””â”€â”€ models/
+    â”œâ”€â”€ yunet/                     # YuNet ONNX model (auto-downloaded on first run)
+    â””â”€â”€ mtcnn/                     # Auto-downloaded MTCNN weights (on first run)
 ```
 
 ---
