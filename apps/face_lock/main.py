@@ -21,6 +21,9 @@ def create_detector(args):
         return MTCNNDetector()
 
 def main(args):
+    # Limit OpenCV internal thread pool to reduce power draw
+    cv2.setNumThreads(2)
+
     if not os.path.exists(args.model):
         print(f"Error: Face recognition model not found at {args.model}")
         print("Please provide a valid ONNX model path using --model")
@@ -36,6 +39,12 @@ def main(args):
         print("Error: Could not open camera.")
         sys.exit(1)
 
+    # Reduce camera sensor power: lower resolution, cap hardware FPS, minimize buffer
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
     authorized_embeddings = []
     registration_steps = ["Close up", "Medium distance", "Far distance"]
     print("Camera opened. Face registration required:")
@@ -49,10 +58,12 @@ def main(args):
     LOCK_THRESHOLD = 15  # lock after 15 consecutive frames without the authorized face
     UNLOCK_THRESHOLD = 0.6  # cosine similarity threshold
     lock_enabled = True
-    TARGET_FPS = 10  # cap processing rate to reduce CPU usage
-    FRAME_DURATION = 1.0 / TARGET_FPS
-    DETECT_EVERY_N = 3  # only run detection every Nth frame
-    SKIP_AFTER_AUTH = 5  # skip recognition for N frames after authorization
+    # Adaptive frame rate tiers for power efficiency
+    FPS_ACTIVE = 8       # registration or active monitoring
+    FPS_AUTHORIZED = 2   # authorized face present — minimal checking
+    FPS_LOCKED = 3       # locked — checking for face return
+    DETECT_EVERY_N = 3   # only run detection every Nth frame
+    SKIP_AFTER_AUTH = 15  # skip recognition for N frames after authorization
     frame_count = 0
     skip_recognition_count = 0
     cached_boxes = None
@@ -140,9 +151,17 @@ def main(args):
             if cv2.getWindowProperty("Face Lock Registration / Preview", cv2.WND_PROP_VISIBLE) >= 1:
                 cv2.destroyWindow("Face Lock Registration / Preview")
 
-        # Throttle to TARGET_FPS to reduce CPU usage
+        # Adaptive throttle — lower FPS when authorized to save power
         elapsed = time.time() - frame_start
-        sleep_ms = max(1, int((FRAME_DURATION - elapsed) * 1000))
+        if len(authorized_embeddings) < len(registration_steps):
+            frame_duration = 1.0 / FPS_ACTIVE
+        elif face_found or skip_recognition_count > 0:
+            frame_duration = 1.0 / FPS_AUTHORIZED
+        elif locker.is_locked:
+            frame_duration = 1.0 / FPS_LOCKED
+        else:
+            frame_duration = 1.0 / FPS_ACTIVE
+        sleep_ms = max(1, int((frame_duration - elapsed) * 1000))
         # Use time.sleep when locked — cv2.waitKey becomes a no-op without a window
         if locker.is_locked:
             time.sleep(sleep_ms / 1000.0)
