@@ -4,19 +4,30 @@ import time
 import os
 import sys
 
-from detector import MTCNNDetector
+from detector import MTCNNDetector, YuNetDetector
 from recognizer import FaceRecognizer
 from lock_screen import ScreenLocker
 from utils import align_face, preprocess_face
 
+def create_detector(args):
+    if args.detector == "mtcnn":
+        return MTCNNDetector()
+
+    try:
+        return YuNetDetector(model_path=args.detector_model)
+    except Exception as exc:
+        print(f"Warning: failed to initialize YuNet detector: {exc}")
+        print("Falling back to MTCNN detector.")
+        return MTCNNDetector()
+
 def main(args):
-    print("Initializing components (using DeepFace Fast MTCNN detector)...")
     if not os.path.exists(args.model):
         print(f"Error: Face recognition model not found at {args.model}")
         print("Please provide a valid ONNX model path using --model")
         sys.exit(1)
 
-    detector = MTCNNDetector()
+    detector = create_detector(args)
+    print(f"Initializing components (using {detector.name} face detector)...")
     recognizer = FaceRecognizer(args.model)
     locker = ScreenLocker()
 
@@ -144,5 +155,18 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="../../models/face_rec.onnx", help="Path to the trained Face Recognition ONNX model")
+    parser.add_argument(
+        "--detector",
+        type=str,
+        default="yunet",
+        choices=["yunet", "mtcnn"],
+        help="Face detector backend to use. 'yunet' is faster on CPU; 'mtcnn' is kept as a fallback.",
+    )
+    parser.add_argument(
+        "--detector-model",
+        type=str,
+        default="models/yunet/face_detection_yunet_2023mar.onnx",
+        help="Path to the YuNet ONNX detector model file.",
+    )
     args = parser.parse_args()
     main(args)
