@@ -92,14 +92,15 @@ python main.py --detector yunet --detector-model C:/models/yunet.onnx
 
 ## Benchmarking
 
-Use `benchmark_model_variants.py` to compare the **recognition backend used by Face Lock** across the original PyTorch checkpoint, the ONNX export, and the quantized ONNX export.
+Use `benchmark_model_variants.py` to compare the **practical Face Lock pipeline** across the original PyTorch checkpoint, the ONNX export, and the quantized ONNX export.
 
 The script reports:
 - Disk size
 - RAM added after model/session load
-- Latency
-- Throughput
-- GPU power (when running on CUDA with `nvidia-smi` available)
+- Mean compute time by app stage
+- Mean loop latency by app stage
+- Throughput by app stage
+- Power
 
 ```bash
 .venv\Scripts\python benchmark_model_variants.py
@@ -108,16 +109,23 @@ The script reports:
 Useful options:
 
 ```bash
-# Short CPU smoke test
-.venv\Scripts\python benchmark_model_variants.py --device cpu --iterations 20 --warmup 5
+# Replay frames from a folder instead of using the webcam
+.venv\Scripts\python benchmark_model_variants.py --source images --image-dir C:/bench/face_lock_frames
 
 # Prefer CUDA when available
-.venv\Scripts\python benchmark_model_variants.py --device cuda --quant-device same
+.venv\Scripts\python benchmark_model_variants.py --device cuda --quant-device same --frame-count 32
+
+# Give webcam collection more chances to find usable face frames
+.venv\Scripts\python benchmark_model_variants.py --max-capture-frames 400
 ```
 
 Notes:
 - If the quantized ONNX file does not exist yet, the script creates it automatically at `apps/face_lock/models/model_quant.onnx`.
-- The benchmark targets the face-recognition model variants that drive Face Lock. Webcam capture, detection, and lock-screen UI are held constant and are not part of this comparison.
+- CPU power is measured with `pyJoules` when available. This path depends on Intel RAPL support and, per `pyJoules` documentation, is currently available on Linux rather than Windows/macOS.
+- CUDA power is still sampled with `nvidia-smi`.
+- The benchmark replays shared frames through the same detector, alignment, preprocessing, recognition, similarity, skip-cache, and stage-throttle patterns used by the app.
+- The reported stages are `Registering`, `Detecting`, `Authorized Cached`, and `Locked`.
+- The script now gathers face-present frames for the registration/detection stages and separate no-face frames for the locked stage. If no natural no-face frames are found, it falls back to synthetic blank frames for the locked-stage pass.
 
 ---
 

@@ -7,26 +7,67 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 import onnxruntime as ort
 import torch
 import torch.nn as nn
 
+from detector import MTCNNDetector, YuNetDetector
+from utils import align_face, preprocess_face
+
 
 APP_DIR = Path(__file__).resolve().parent
 REPO_ROOT = APP_DIR.parents[1]
 
-
 DEFAULT_PTH_PATH = REPO_ROOT / "pretrained_models" / "ckpt_epoch_40.pth.tar"
 DEFAULT_ONNX_PATH = REPO_ROOT / "pretrained_models" / "model.onnx"
 DEFAULT_QUANT_PATH = APP_DIR / "models" / "model_quant.onnx"
+DEFAULT_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "face_detection_yunet_2023mar.onnx"
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MB = 1024 * 1024
 
 KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
 PSAPI = ctypes.WinDLL("psapi", use_last_error=True)
+
+
+@dataclass(frozen=True)
+class StageConfig:
+    label: str
+    target_fps: float
+    compare_authorized: bool
+    enable_skip_cache: bool
+    collect_registration: bool = False
+
+
+@dataclass
+class VariantRuntime:
+    label: str
+    recognizer: object
+    runtime: str
+    power_device: str
+    disk_size_mb: float
+    ram_added_mb: float
+    path: str
+
+
+@dataclass
+class FrameBuckets:
+    face_frames: list
+    no_face_frames: list
+    synthetic_no_face_frames: bool = False
+
+
+STAGES = [
+    StageConfig("Registering", target_fps=8.0, compare_authorized=False, enable_skip_cache=False, collect_registration=True),
+    StageConfig("Detecting", target_fps=8.0, compare_authorized=True, enable_skip_cache=False),
+    StageConfig("Authorized Cached", target_fps=2.0, compare_authorized=True, enable_skip_cache=True),
+    StageConfig("Locked", target_fps=3.0, compare_authorized=True, enable_skip_cache=False),
+]
 
 
 class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
@@ -47,73 +88,37 @@ class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Measure Face Lock recognition backend metrics for original, ONNX, and quantized ONNX variants."
+        description="Benchmark Face Lock end-to-end stage performance for original, ONNX, and quantized ONNX recognition variants."
     )
-    parser.add_argument(
-        "--pth-path",
-        type=Path,
-        default=DEFAULT_PTH_PATH,
-        help="Path to the original PyTorch checkpoint.",
-    )
-    parser.add_argument(
-        "--onnx-path",
-        type=Path,
-        default=DEFAULT_ONNX_PATH,
-        help="Path to the exported ONNX model.",
-    )
-    parser.add_argument(
-        "--quant-path",
-        type=Path,
-        default=DEFAULT_QUANT_PATH,
-        help="Path to the quantized ONNX model.",
-    )
-    parser.add_argument(
-        "--device",
-        choices=["auto", "cpu", "cuda"],
-        default="auto",
-        help="Inference device for the original and ONNX variants.",
-    )
-    parser.add_argument(
-        "--quant-device",
-        choices=["same", "cpu", "cuda"],
-        default="same",
-        help="Inference device for the quantized ONNX variant.",
-    )
-    parser.add_argument("--batch-size", type=int, default=1, help="Benchmark batch size.")
-    parser.add_argument("--iterations", type=int, default=100, help="Timed inference iterations.")
-    parser.add_argument("--warmup", type=int, default=10, help="Warmup iterations before timing.")
-    parser.add_argument(
-        "--gpu-index",
-        type=int,
-        default=0,
-        help="GPU index for CUDA execution and nvidia-smi power sampling.",
-    )
-    parser.add_argument(
-        "--power-sample-ms",
-        type=int,
-        default=100,
-        help="GPU power sampling interval in milliseconds.",
-    )
-    parser.add_argument(
-        "--backbone",
-        type=str,
-        default="auto",
-        help="Backbone name for the original checkpoint. Use 'auto' to read the checkpoint arch field.",
-    )
+    parser.add_argument("--pth-path", type=Path, default=DEFAULT_PTH_PATH, help="Path to the original PyTorch checkpoint.")
+    parser.add_argument("--onnx-path", type=Path, default=DEFAULT_ONNX_PATH, help="Path to the exported ONNX model.")
+    parser.add_argument("--quant-path", type=Path, default=DEFAULT_QUANT_PATH, help="Path to the quantized ONNX model.")
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto", help="Primary device for original and ONNX variants.")
+    parser.add_argument("--quant-device", choices=["same", "cpu", "cuda"], default="same", help="Inference device for the quantized ONNX variant.")
+    parser.add_argument("--gpu-index", type=int, default=0, help="GPU index for CUDA execution and nvidia-smi power sampling.")
+    parser.add_argument("--power-sample-ms", type=int, default=100, help="GPU power sampling interval in milliseconds.")
+    parser.add_argument("--backbone", type=str, default="auto", help="Backbone name for the original checkpoint. Use 'auto' to read the checkpoint arch field.")
     parser.add_argument("--feature-dim", type=int, default=512, help="Embedding size for the original model.")
-    parser.add_argument("--input-size", type=int, default=112, help="Input height/width for dummy inference.")
-    parser.add_argument(
-        "--feat-bn",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether the original framework model uses feature batch norm.",
-    )
-    parser.add_argument(
-        "--auto-quantize",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Create the quantized ONNX model automatically when it is missing.",
-    )
+    parser.add_argument("--input-size", type=int, default=112, help="Input height/width for face preprocessing.")
+    parser.add_argument("--feat-bn", action=argparse.BooleanOptionalAction, default=True, help="Whether the original framework model uses feature batch norm.")
+    parser.add_argument("--auto-quantize", action=argparse.BooleanOptionalAction, default=True, help="Create the quantized ONNX model automatically when it is missing.")
+    parser.add_argument("--detector", choices=["yunet", "mtcnn"], default="yunet", help="Face detector backend to use during the practical benchmark.")
+    parser.add_argument("--detector-model", type=Path, default=DEFAULT_DETECTOR_MODEL, help="Path to the YuNet detector ONNX model.")
+    parser.add_argument("--source", choices=["webcam", "images"], default="webcam", help="Frame source for the benchmark.")
+    parser.add_argument("--image-dir", type=Path, default=None, help="Directory of benchmark frames when --source images is used.")
+    parser.add_argument("--camera-index", type=int, default=0, help="Camera index when --source webcam is used.")
+    parser.add_argument("--frame-count", type=int, default=24, help="Number of shared frames to collect and replay per stage.")
+    parser.add_argument("--camera-warmup", type=int, default=10, help="Number of warmup webcam reads before collecting benchmark frames.")
+    parser.add_argument("--camera-width", type=int, default=640, help="Requested webcam width.")
+    parser.add_argument("--camera-height", type=int, default=480, help="Requested webcam height.")
+    parser.add_argument("--camera-fps", type=int, default=15, help="Requested webcam FPS.")
+    parser.add_argument("--max-capture-frames", type=int, default=240, help="Maximum raw frames to inspect while gathering benchmark samples.")
+    parser.add_argument("--registration-steps", type=int, default=3, help="Number of embeddings to collect during the registering stage.")
+    parser.add_argument("--similarity-threshold", type=float, default=0.6, help="Cosine similarity threshold used by Face Lock.")
+    parser.add_argument("--detect-every-n", type=int, default=3, help="Run face detection every Nth frame, matching the app loop.")
+    parser.add_argument("--skip-after-auth", type=int, default=15, help="Skip recognition for N frames after authorization.")
+    parser.add_argument("--simulate-throttle", action=argparse.BooleanOptionalAction, default=True, help="Sleep to match the app's stage FPS targets.")
+    parser.add_argument("--limit-opencv-threads", type=int, default=2, help="OpenCV thread limit to match the app.")
     return parser.parse_args()
 
 
@@ -160,6 +165,15 @@ def resolve_quant_device(device_arg: str, default_device: str):
     return device_arg
 
 
+def normalize_embedding(output):
+    output = output / np.linalg.norm(output, axis=1, keepdims=True)
+    return output[0]
+
+
+def cosine_similarity(emb1, emb2):
+    return float(np.dot(emb1, emb2))
+
+
 def load_checkpoint_state(model, checkpoint_path: Path):
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
@@ -177,9 +191,7 @@ def infer_backbone(checkpoint_path: Path, fallback_backbone: str):
     if isinstance(checkpoint, dict) and checkpoint.get("arch"):
         return checkpoint["arch"]
     if fallback_backbone == "auto":
-        raise RuntimeError(
-            "Could not infer the backbone from the checkpoint. Please pass --backbone explicitly."
-        )
+        raise RuntimeError("Could not infer the backbone from the checkpoint. Please pass --backbone explicitly.")
     return fallback_backbone
 
 
@@ -187,7 +199,7 @@ def load_backbone_factory(backbone_name: str):
     if backbone_name not in {"mobilefacenet", "mobilefacenet_large"}:
         raise ValueError(
             f"Unsupported backbone '{backbone_name}' for this app benchmark. "
-            "Use the Face Lock default MobileFaceNet checkpoint or extend this script with the required backbone factory."
+            "Use the Face Lock MobileFaceNet checkpoint or extend this script with the required backbone factory."
         )
 
     backbone_module_path = REPO_ROOT / "models" / "backbones" / "mobilefacenet.py"
@@ -216,31 +228,56 @@ class OriginalInferenceModel(nn.Module):
         return feature
 
 
-def load_original_model(args, device: str):
-    backbone = infer_backbone(args.pth_path, args.backbone)
-    model = OriginalInferenceModel(
-        backbone_name=backbone,
-        feature_dim=args.feature_dim,
-        input_size=args.input_size,
-        feat_bn=args.feat_bn,
-    )
-    checkpoint, missing, unexpected = load_checkpoint_state(model, args.pth_path)
-    if missing:
-        print(f"[original] Missing checkpoint keys: {missing}")
-    if unexpected:
-        print(f"[original] Unexpected checkpoint keys: {unexpected}")
-    model.eval()
-    model.to(device)
-    arch_name = checkpoint.get("arch", backbone) if isinstance(checkpoint, dict) else backbone
-    return model, arch_name
+class OriginalRecognizer:
+    def __init__(self, args, device: str):
+        backbone = infer_backbone(args.pth_path, args.backbone)
+        self.model = OriginalInferenceModel(
+            backbone_name=backbone,
+            feature_dim=args.feature_dim,
+            input_size=args.input_size,
+            feat_bn=args.feat_bn,
+        )
+        checkpoint, missing, unexpected = load_checkpoint_state(self.model, args.pth_path)
+        if missing:
+            print(f"[original] Missing checkpoint keys: {missing}")
+        if unexpected:
+            print(f"[original] Unexpected checkpoint keys: {unexpected}")
+        self.model.eval()
+        self.device = torch.device(device)
+        self.model.to(self.device)
+        self.runtime = f"PyTorch on {device} ({checkpoint.get('arch', backbone) if isinstance(checkpoint, dict) else backbone})"
+        self.power_device = device
+
+    def get_embedding(self, img_tensor):
+        tensor = torch.from_numpy(img_tensor).to(self.device)
+        with torch.inference_mode():
+            output = self.model(tensor, extract_mode=True).detach().cpu().numpy()
+        return normalize_embedding(output)
+
+    def compute_similarity(self, emb1, emb2):
+        return cosine_similarity(emb1, emb2)
+
+
+class OrtRecognizer:
+    def __init__(self, model_path: Path, requested_device: str, gpu_index: int):
+        self.session, provider = build_session(model_path, requested_device, gpu_index)
+        self.input_name = self.session.get_inputs()[0].name
+        self.runtime = provider
+        self.power_device = "cuda" if provider == "CUDAExecutionProvider" else "cpu"
+
+    def get_embedding(self, img_tensor):
+        output = self.session.run(None, {self.input_name: img_tensor})[0]
+        return normalize_embedding(output)
+
+    def compute_similarity(self, emb1, emb2):
+        return cosine_similarity(emb1, emb2)
 
 
 def build_session(path: Path, requested_device: str, gpu_index: int):
     providers = ["CPUExecutionProvider"]
     provider_used = "CPUExecutionProvider"
     if requested_device == "cuda" and "CUDAExecutionProvider" in ort.get_available_providers():
-        cuda_options = {"device_id": gpu_index}
-        providers = [("CUDAExecutionProvider", cuda_options), "CPUExecutionProvider"]
+        providers = [("CUDAExecutionProvider", {"device_id": gpu_index}), "CPUExecutionProvider"]
         provider_used = "CUDAExecutionProvider"
     session = ort.InferenceSession(str(path), providers=providers)
     actual_provider = session.get_providers()[0] if session.get_providers() else provider_used
@@ -255,9 +292,6 @@ def ensure_quantized_model(onnx_path: Path, quant_path: Path):
     import onnx
 
     print(f"Creating quantized ONNX model at {quant_path} ...")
-
-    # Pack external-data ONNX exports into a single local file first so the
-    # quantizer operates entirely within the app workspace.
     if Path(str(onnx_path) + ".data").exists():
         model = onnx.load_model(str(onnx_path), load_external_data=True)
         onnx.save_model(model, str(packed_model_path), save_as_external_data=False)
@@ -393,95 +427,356 @@ class NvidiaSmiPowerSampler:
         return float(np.mean(self.samples))
 
 
-def measure_torch_latency_ms(model, input_tensor, iterations, warmup, device, gpu_index, power_sample_s):
-    device_obj = torch.device(device)
-    input_on_device = input_tensor.to(device_obj)
+def _iter_energy_samples(trace):
+    samples = getattr(trace, "samples", None)
+    if samples is None:
+        samples = getattr(trace, "_samples", None)
+    if samples is not None:
+        return list(samples)
+    try:
+        return list(trace)
+    except TypeError:
+        return []
 
-    for _ in range(warmup):
-        with torch.inference_mode():
-            _ = model(input_on_device, extract_mode=True)
-    if device == "cuda":
-        torch.cuda.synchronize(device_obj)
 
-    power_sampler = None
-    if device == "cuda":
-        power_sampler = NvidiaSmiPowerSampler(gpu_index=gpu_index, interval_s=power_sample_s)
-        power_sampler.start()
+def _extract_total_energy_uj(trace):
+    total_energy_uj = 0.0
+    found_value = False
+    for sample in _iter_energy_samples(trace):
+        energy = getattr(sample, "energy", None)
+        if hasattr(energy, "items"):
+            for _, value in energy.items():
+                if isinstance(value, (int, float)):
+                    total_energy_uj += float(value)
+                    found_value = True
+        elif isinstance(energy, (int, float)):
+            total_energy_uj += float(energy)
+            found_value = True
+    return total_energy_uj if found_value else None
 
+
+def measure_pyjoules_cpu_power(run_callable):
     start = time.perf_counter()
-    for _ in range(iterations):
-        with torch.inference_mode():
-            _ = model(input_on_device, extract_mode=True)
-    if device == "cuda":
-        torch.cuda.synchronize(device_obj)
-    elapsed_s = time.perf_counter() - start
 
-    avg_power_w = None
-    if power_sampler is not None:
-        power_sampler.stop()
-        avg_power_w = power_sampler.average_power_w
-
-    return (elapsed_s / iterations) * 1000.0, avg_power_w
-
-
-def measure_ort_latency_ms(session, input_tensor, iterations, warmup, gpu_index, power_sample_s):
-    provider = session.get_providers()[0] if session.get_providers() else "CPUExecutionProvider"
-    input_name = session.get_inputs()[0].name
-    is_cuda = provider == "CUDAExecutionProvider" and torch.cuda.is_available()
-
-    if is_cuda:
-        device = torch.device(f"cuda:{gpu_index}")
-        input_on_device = input_tensor.to(device).contiguous()
-        output_shape = []
-        for dim in session.get_outputs()[0].shape:
-            if isinstance(dim, str) or dim is None or dim <= 0:
-                output_shape.append(input_tensor.shape[0])
-            else:
-                output_shape.append(dim)
-        output_tensor = torch.empty(tuple(output_shape), dtype=torch.float32, device=device).contiguous()
-        io_binding = session.io_binding()
-        io_binding.bind_input(
-            name=input_name,
-            device_type="cuda",
-            device_id=gpu_index,
-            element_type=np.float32,
-            shape=tuple(input_on_device.shape),
-            buffer_ptr=input_on_device.data_ptr(),
-        )
-        io_binding.bind_output(
-            name=session.get_outputs()[0].name,
-            device_type="cuda",
-            device_id=gpu_index,
-            element_type=np.float32,
-            shape=tuple(output_tensor.shape),
-            buffer_ptr=output_tensor.data_ptr(),
-        )
-
-        for _ in range(warmup):
-            session.run_with_iobinding(io_binding)
-        torch.cuda.synchronize(device)
-
-        power_sampler = NvidiaSmiPowerSampler(gpu_index=gpu_index, interval_s=power_sample_s)
-        power_sampler.start()
-
-        start = time.perf_counter()
-        for _ in range(iterations):
-            session.run_with_iobinding(io_binding)
-        torch.cuda.synchronize(device)
+    if not sys.platform.startswith("linux"):
+        payload = run_callable()
         elapsed_s = time.perf_counter() - start
+        return payload, elapsed_s, None, "pyJoules CPU RAPL is only available on Linux"
 
-        power_sampler.stop()
-        return (elapsed_s / iterations) * 1000.0, power_sampler.average_power_w
+    try:
+        from pyJoules.device import DeviceFactory
+        from pyJoules.device.rapl_device import RaplPackageDomain
+        from pyJoules.energy_meter import EnergyMeter
+    except ImportError:
+        payload = run_callable()
+        elapsed_s = time.perf_counter() - start
+        return payload, elapsed_s, None, "pyJoules not installed"
 
-    input_array = input_tensor.cpu().numpy()
-    for _ in range(warmup):
-        session.run(None, {input_name: input_array})
+    try:
+        devices = DeviceFactory.create_devices([RaplPackageDomain(0)])
+        meter = EnergyMeter(devices)
+    except Exception as exc:
+        payload = run_callable()
+        elapsed_s = time.perf_counter() - start
+        return payload, elapsed_s, None, f"pyJoules setup failed: {exc}"
 
-    start = time.perf_counter()
-    for _ in range(iterations):
-        session.run(None, {input_name: input_array})
-    elapsed_s = time.perf_counter() - start
-    return (elapsed_s / iterations) * 1000.0, None
+    payload = None
+    try:
+        meter.start(tag="benchmark")
+        payload = run_callable()
+        elapsed_s = time.perf_counter() - start
+        meter.stop()
+        trace = meter.get_trace()
+        total_energy_uj = _extract_total_energy_uj(trace)
+        if total_energy_uj is None or elapsed_s <= 0:
+            return payload, elapsed_s, None, "pyJoules returned no CPU energy samples"
+        avg_power_w = (total_energy_uj / 1_000_000.0) / elapsed_s
+        return payload, elapsed_s, avg_power_w, "pyJoules RaplPackageDomain(0)"
+    except Exception as exc:
+        elapsed_s = time.perf_counter() - start
+        if payload is None:
+            payload = run_callable()
+            elapsed_s = time.perf_counter() - start
+        return payload, elapsed_s, None, f"pyJoules measurement failed: {exc}"
+
+
+def measure_stage(stage_callable, power_device: str, gpu_index: int, power_sample_s: float):
+    if power_device == "cuda":
+        sampler = NvidiaSmiPowerSampler(gpu_index=gpu_index, interval_s=power_sample_s)
+        sampler.start()
+        start = time.perf_counter()
+        payload = stage_callable()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(torch.device(f"cuda:{gpu_index}"))
+        elapsed_s = time.perf_counter() - start
+        sampler.stop()
+        return payload, elapsed_s, sampler.average_power_w, "nvidia-smi"
+
+    return measure_pyjoules_cpu_power(stage_callable)
+
+
+def create_detector(args):
+    if args.detector == "mtcnn":
+        return MTCNNDetector()
+    return YuNetDetector(model_path=str(args.detector_model))
+
+
+def load_webcam_frames(args):
+    cap = cv2.VideoCapture(args.camera_index)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open the benchmark camera.")
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.camera_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.camera_height)
+    cap.set(cv2.CAP_PROP_FPS, args.camera_fps)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    try:
+        for _ in range(max(0, args.camera_warmup)):
+            cap.read()
+
+        frames = []
+        while len(frames) < args.max_capture_frames:
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError("Failed to read a webcam frame during benchmark collection.")
+            frames.append(frame.copy())
+        return frames
+    finally:
+        cap.release()
+
+
+def load_image_frames(args):
+    if args.image_dir is None:
+        raise RuntimeError("Please provide --image-dir when using --source images.")
+    if not args.image_dir.exists():
+        raise FileNotFoundError(f"Image directory not found: {args.image_dir}")
+
+    paths = sorted(p for p in args.image_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS)
+    if not paths:
+        raise RuntimeError(f"No supported image files found in {args.image_dir}")
+
+    frames = []
+    for path in paths[: args.max_capture_frames]:
+        frame = cv2.imread(str(path))
+        if frame is None:
+            continue
+        frames.append(frame)
+
+    if not frames:
+        raise RuntimeError(f"Could not decode any images from {args.image_dir}")
+    return frames
+
+
+def load_benchmark_frames(args):
+    if args.source == "webcam":
+        return load_webcam_frames(args)
+    return load_image_frames(args)
+
+
+def make_synthetic_no_face_frames(face_frames, frame_count):
+    if not face_frames:
+        raise RuntimeError("Cannot synthesize no-face frames because no benchmark frames were collected.")
+    height, width = face_frames[0].shape[:2]
+    blank = np.zeros((height, width, 3), dtype=np.uint8)
+    return [blank.copy() for _ in range(frame_count)]
+
+
+def bucket_frames_by_detection(frames, detector, args):
+    face_frames = []
+    no_face_frames = []
+
+    for frame in frames:
+        boxes, _ = detector.detect(frame)
+        if boxes.shape[0] > 0:
+            if len(face_frames) < args.frame_count:
+                face_frames.append(frame.copy())
+        else:
+            if len(no_face_frames) < args.frame_count:
+                no_face_frames.append(frame.copy())
+
+        if len(face_frames) >= args.frame_count and len(no_face_frames) >= args.frame_count:
+            break
+
+    if len(face_frames) < args.registration_steps:
+        raise RuntimeError(
+            f"Only found {len(face_frames)} usable face frames during collection, but registration needs "
+            f"{args.registration_steps}. Try facing the camera more clearly, increasing --max-capture-frames, "
+            f"or use --source images with face-containing samples."
+        )
+
+    synthetic_no_face_frames = False
+    if not no_face_frames:
+        no_face_frames = make_synthetic_no_face_frames(face_frames, args.frame_count)
+        synthetic_no_face_frames = True
+
+    while len(face_frames) < args.frame_count:
+        face_frames.append(face_frames[len(face_frames) % max(1, len(face_frames))].copy())
+
+    while len(no_face_frames) < args.frame_count:
+        no_face_frames.append(no_face_frames[len(no_face_frames) % max(1, len(no_face_frames))].copy())
+
+    return FrameBuckets(
+        face_frames=face_frames[: args.frame_count],
+        no_face_frames=no_face_frames[: args.frame_count],
+        synthetic_no_face_frames=synthetic_no_face_frames,
+    )
+
+
+def select_largest_face(boxes, landmarks):
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    max_idx = int(areas.argmax())
+    return boxes[max_idx], landmarks[max_idx]
+
+
+def run_stage(stage: StageConfig, frames, detector, recognizer, auth_embeddings, args):
+    processing_ms = []
+    loop_ms = []
+    face_detections = 0
+    recognition_calls = 0
+    authorized_hits = 0
+    working_auth = [emb.copy() for emb in auth_embeddings]
+    skip_recognition_count = 0
+    cached_boxes = None
+    cached_landmarks = None
+
+    frame_total = len(frames)
+    for frame_idx in range(frame_total):
+        frame = frames[frame_idx % len(frames)]
+        loop_start = time.perf_counter()
+
+        if frame_idx % args.detect_every_n == 0 or cached_boxes is None:
+            boxes, landmarks = detector.detect(frame)
+            cached_boxes, cached_landmarks = boxes, landmarks
+        else:
+            boxes, landmarks = cached_boxes, cached_landmarks
+
+        if boxes.shape[0] > 0:
+            face_detections += 1
+            box, landmark = select_largest_face(boxes, landmarks)
+
+            if (
+                stage.enable_skip_cache
+                and skip_recognition_count > 0
+                and len(working_auth) >= args.registration_steps
+            ):
+                skip_recognition_count -= 1
+                authorized_hits += 1
+            else:
+                aligned_face = align_face(frame, box, landmark, image_size=args.input_size)
+                img_tensor = preprocess_face(aligned_face)
+                embedding = recognizer.get_embedding(img_tensor)
+                recognition_calls += 1
+
+                if stage.collect_registration and len(working_auth) < args.registration_steps:
+                    working_auth.append(embedding)
+
+                if stage.compare_authorized and len(working_auth) >= args.registration_steps:
+                    similarities = [recognizer.compute_similarity(embedding, auth_emb) for auth_emb in working_auth]
+                    if max(similarities) > args.similarity_threshold:
+                        authorized_hits += 1
+                        if stage.enable_skip_cache:
+                            skip_recognition_count = args.skip_after_auth
+
+        processing_elapsed = time.perf_counter() - loop_start
+        processing_ms.append(processing_elapsed * 1000.0)
+
+        if args.simulate_throttle and stage.target_fps > 0:
+            target_frame_s = 1.0 / stage.target_fps
+            remaining_s = max(0.0, target_frame_s - processing_elapsed)
+            if remaining_s > 0:
+                time.sleep(remaining_s)
+
+        loop_ms.append((time.perf_counter() - loop_start) * 1000.0)
+
+    if stage.collect_registration and len(working_auth) < args.registration_steps:
+        raise RuntimeError(
+            f"Registration stage only found {len(working_auth)} usable face embeddings. "
+            f"Need {args.registration_steps}. Try a longer run or clearer face frames."
+        )
+
+    return {
+        "processing_ms_mean": float(np.mean(processing_ms)) if processing_ms else None,
+        "latency_ms_mean": float(np.mean(loop_ms)) if loop_ms else None,
+        "frames_processed": frame_total,
+        "detections": face_detections,
+        "recognition_calls": recognition_calls,
+        "authorized_hits": authorized_hits,
+        "auth_embeddings": working_auth,
+    }
+
+
+def build_variant_runtimes(args, device: str, quant_device: str):
+    original_recognizer, original_ram = measure_ram_added(lambda: OriginalRecognizer(args, device))
+    onnx_recognizer, onnx_ram = measure_ram_added(lambda: OrtRecognizer(args.onnx_path, device, args.gpu_index))
+    quant_recognizer, quant_ram = measure_ram_added(lambda: OrtRecognizer(args.quant_path, quant_device, args.gpu_index))
+
+    return {
+        "original": VariantRuntime(
+            label="Original",
+            recognizer=original_recognizer,
+            runtime=original_recognizer.runtime,
+            power_device=original_recognizer.power_device,
+            disk_size_mb=get_file_size_mb(args.pth_path),
+            ram_added_mb=original_ram,
+            path=str(args.pth_path),
+        ),
+        "onnx": VariantRuntime(
+            label="ONNX",
+            recognizer=onnx_recognizer,
+            runtime=onnx_recognizer.runtime,
+            power_device=onnx_recognizer.power_device,
+            disk_size_mb=get_file_size_mb(args.onnx_path),
+            ram_added_mb=onnx_ram,
+            path=str(args.onnx_path),
+        ),
+        "quant": VariantRuntime(
+            label="Quant ONNX",
+            recognizer=quant_recognizer,
+            runtime=quant_recognizer.runtime,
+            power_device=quant_recognizer.power_device,
+            disk_size_mb=get_file_size_mb(args.quant_path),
+            ram_added_mb=quant_ram,
+            path=str(args.quant_path),
+        ),
+    }
+
+
+def benchmark_variant_stages(variant: VariantRuntime, frames, detector, args, power_sample_s: float):
+    stage_results = {}
+    auth_embeddings = []
+    detector_power_device = "cpu"
+    detector_device = getattr(detector, "device", None)
+    if detector_device is not None and getattr(detector_device, "type", None) == "cuda":
+        detector_power_device = "cuda"
+
+    for stage in STAGES:
+        stage_frames = frames.face_frames if stage.label != "Locked" else frames.no_face_frames
+
+        def run_callable():
+            return run_stage(stage, stage_frames, detector, variant.recognizer, auth_embeddings, args)
+
+        payload, elapsed_s, avg_power_w, power_source = measure_stage(
+            run_callable,
+            power_device="cuda" if (variant.power_device == "cuda" or detector_power_device == "cuda") else "cpu",
+            gpu_index=args.gpu_index,
+            power_sample_s=power_sample_s,
+        )
+
+        auth_embeddings = payload["auth_embeddings"]
+        stage_results[stage.label] = {
+            "processing_ms": payload["processing_ms_mean"],
+            "latency_ms": payload["latency_ms_mean"],
+            "throughput_fps": (payload["frames_processed"] / elapsed_s) if elapsed_s > 0 else None,
+            "power_w": avg_power_w,
+            "power_source": power_source,
+            "detections": payload["detections"],
+            "recognition_calls": payload["recognition_calls"],
+            "authorized_hits": payload["authorized_hits"],
+            "frames_processed": payload["frames_processed"],
+        }
+
+    return stage_results
 
 
 def format_float(value):
@@ -490,43 +785,61 @@ def format_float(value):
     return f"{value:.2f}"
 
 
-def print_table(results):
-    headers = ["Metric", "Original", "ONNX", "Quant ONNX"]
+def print_load_table(variants):
+    print("\nLoad Metrics")
+    print("=" * 72)
+    print(f"{'Metric':<20} | {'Original':>14} | {'ONNX':>14} | {'Quant ONNX':>14}")
+    print("-" * 72)
+    print(
+        f"{'Disk Size (MB)':<20} | "
+        f"{format_float(variants['original'].disk_size_mb):>14} | "
+        f"{format_float(variants['onnx'].disk_size_mb):>14} | "
+        f"{format_float(variants['quant'].disk_size_mb):>14}"
+    )
+    print(
+        f"{'RAM Added (MB)':<20} | "
+        f"{format_float(variants['original'].ram_added_mb):>14} | "
+        f"{format_float(variants['onnx'].ram_added_mb):>14} | "
+        f"{format_float(variants['quant'].ram_added_mb):>14}"
+    )
+    print("=" * 72)
+
+
+def print_stage_table(stage_label, results_by_variant):
+    print(f"\n{stage_label} Stage")
+    print("=" * 72)
+    print(f"{'Metric':<20} | {'Original':>14} | {'ONNX':>14} | {'Quant ONNX':>14}")
+    print("-" * 72)
     rows = [
-        ("Disk Size (MB)", "disk_size_mb"),
-        ("RAM Added (MB)", "ram_added_mb"),
+        ("Compute (ms)", "processing_ms"),
         ("Latency (ms)", "latency_ms"),
         ("Throughput (FPS)", "throughput_fps"),
-        ("GPU Power (W)", "gpu_power_w"),
+        ("Power (W)", "power_w"),
     ]
-
-    widths = [20, 14, 14, 14]
-    print("\n" + "=" * 72)
-    print(
-        f"{headers[0]:<{widths[0]}} | "
-        f"{headers[1]:>{widths[1]}} | "
-        f"{headers[2]:>{widths[2]}} | "
-        f"{headers[3]:>{widths[3]}}"
-    )
-    print("-" * 72)
     for label, key in rows:
         print(
-            f"{label:<{widths[0]}} | "
-            f"{format_float(results['original'].get(key)):>{widths[1]}} | "
-            f"{format_float(results['onnx'].get(key)):>{widths[2]}} | "
-            f"{format_float(results['quant'].get(key)):>{widths[3]}}"
+            f"{label:<20} | "
+            f"{format_float(results_by_variant['original'][key]):>14} | "
+            f"{format_float(results_by_variant['onnx'][key]):>14} | "
+            f"{format_float(results_by_variant['quant'][key]):>14}"
         )
     print("=" * 72)
 
 
-def print_variant_details(results):
-    print("Variant details:")
-    print(f"  original checkpoint: {results['original']['path']}")
-    print(f"  original device:     {results['original']['runtime']}")
-    print(f"  ONNX path:           {results['onnx']['path']}")
-    print(f"  ONNX provider:       {results['onnx']['runtime']}")
-    print(f"  quant ONNX path:     {results['quant']['path']}")
-    print(f"  quant provider:      {results['quant']['runtime']}")
+def print_variant_details(variants, stage_results):
+    print("\nVariant Details")
+    for key in ["original", "onnx", "quant"]:
+        variant = variants[key]
+        print(f"  {variant.label}: {variant.runtime}")
+        print(f"  path: {variant.path}")
+        for stage in STAGES:
+            result = stage_results[key][stage.label]
+            print(
+                f"  {stage.label}: power={result['power_source']}, "
+                f"detections={result['detections']}/{result['frames_processed']}, "
+                f"recognitions={result['recognition_calls']}, "
+                f"authorized={result['authorized_hits']}"
+            )
 
 
 def main():
@@ -534,6 +847,7 @@ def main():
     args.pth_path = args.pth_path.resolve()
     args.onnx_path = args.onnx_path.resolve()
     args.quant_path = args.quant_path.resolve()
+    args.detector_model = args.detector_model.resolve()
 
     if not args.pth_path.exists():
         raise FileNotFoundError(f"Original checkpoint not found: {args.pth_path}")
@@ -552,88 +866,47 @@ def main():
             )
         ensure_quantized_model(args.onnx_path, args.quant_path)
 
-    dummy_input = torch.randn(args.batch_size, 3, args.input_size, args.input_size, dtype=torch.float32)
-    results = {
-        "original": {"path": str(args.pth_path)},
-        "onnx": {"path": str(args.onnx_path)},
-        "quant": {"path": str(args.quant_path)},
-    }
+    cv2.setNumThreads(max(1, args.limit_opencv_threads))
 
-    print(f"Benchmarking Face Lock recognition variants with batch_size={args.batch_size}, iterations={args.iterations}")
-    print(f"Primary device: {device}")
-    print(f"Quantized device: {quant_device}")
+    detector = create_detector(args)
+    print(f"Collecting benchmark frames from {args.source} ...")
+    raw_frames = load_benchmark_frames(args)
+    frames = bucket_frames_by_detection(raw_frames, detector, args)
+    print(
+        f"Prepared {len(frames.face_frames)} face frames and {len(frames.no_face_frames)} no-face frames "
+        f"for stage replay."
+    )
+    if frames.synthetic_no_face_frames:
+        print("Locked-stage frames were synthesized because no natural no-face frames were found.")
 
-    original_model, original_ram = measure_ram_added(lambda: load_original_model(args, device))
-    original_runner, arch_name = original_model
-    original_latency_ms, original_power_w = measure_torch_latency_ms(
-        model=original_runner,
-        input_tensor=dummy_input,
-        iterations=args.iterations,
-        warmup=args.warmup,
-        device=device,
-        gpu_index=args.gpu_index,
-        power_sample_s=power_sample_s,
-    )
-    results["original"].update(
-        {
-            "runtime": f"PyTorch on {device} ({arch_name})",
-            "disk_size_mb": get_file_size_mb(args.pth_path),
-            "ram_added_mb": original_ram,
-            "latency_ms": original_latency_ms,
-            "throughput_fps": (1000.0 / original_latency_ms) * args.batch_size if original_latency_ms > 0 else None,
-            "gpu_power_w": original_power_w,
-        }
-    )
+    variants = build_variant_runtimes(args, device, quant_device)
 
-    onnx_session, onnx_ram = measure_ram_added(lambda: build_session(args.onnx_path, device, args.gpu_index))
-    onnx_runner, onnx_provider = onnx_session
-    onnx_latency_ms, onnx_power_w = measure_ort_latency_ms(
-        session=onnx_runner,
-        input_tensor=dummy_input,
-        iterations=args.iterations,
-        warmup=args.warmup,
-        gpu_index=args.gpu_index,
-        power_sample_s=power_sample_s,
-    )
-    results["onnx"].update(
-        {
-            "runtime": onnx_provider,
-            "disk_size_mb": get_file_size_mb(args.onnx_path),
-            "ram_added_mb": onnx_ram,
-            "latency_ms": onnx_latency_ms,
-            "throughput_fps": (1000.0 / onnx_latency_ms) * args.batch_size if onnx_latency_ms > 0 else None,
-            "gpu_power_w": onnx_power_w,
-        }
-    )
+    stage_results = {}
+    for key in ["original", "onnx", "quant"]:
+        print(f"\nBenchmarking {variants[key].label} ...")
+        stage_results[key] = benchmark_variant_stages(variants[key], frames, detector, args, power_sample_s)
 
-    quant_session, quant_ram = measure_ram_added(lambda: build_session(args.quant_path, quant_device, args.gpu_index))
-    quant_runner, quant_provider = quant_session
-    quant_latency_ms, quant_power_w = measure_ort_latency_ms(
-        session=quant_runner,
-        input_tensor=dummy_input,
-        iterations=args.iterations,
-        warmup=args.warmup,
-        gpu_index=args.gpu_index,
-        power_sample_s=power_sample_s,
-    )
-    results["quant"].update(
-        {
-            "runtime": quant_provider,
-            "disk_size_mb": get_file_size_mb(args.quant_path),
-            "ram_added_mb": quant_ram,
-            "latency_ms": quant_latency_ms,
-            "throughput_fps": (1000.0 / quant_latency_ms) * args.batch_size if quant_latency_ms > 0 else None,
-            "gpu_power_w": quant_power_w,
-        }
-    )
+    print_load_table(variants)
+    for stage in STAGES:
+        print_stage_table(
+            stage.label,
+            {
+                "original": stage_results["original"][stage.label],
+                "onnx": stage_results["onnx"][stage.label],
+                "quant": stage_results["quant"][stage.label],
+            },
+        )
 
-    print_table(results)
-    print_variant_details(results)
+    print_variant_details(variants, stage_results)
+    print("\nNotes:")
     if device == "cuda" or quant_device == "cuda":
-        print(f"Available ONNX Runtime providers: {ort.get_available_providers()}")
-        print("GPU power is sampled with nvidia-smi while each timed loop runs.")
+        print(f"  Available ONNX Runtime providers: {ort.get_available_providers()}")
+        print("  CUDA power is sampled with nvidia-smi while each stage loop runs.")
     else:
-        print("GPU power is reported as N/A when running on CPU.")
+        print("  CPU power uses pyJoules when available; otherwise Power (W) is reported as N/A.")
+    print("  Stage metrics are mean values over the practical Face Lock pipeline for the collected shared frames.")
+    if frames.synthetic_no_face_frames:
+        print("  Locked-stage metrics used synthetic blank frames because the capture set contained no no-face samples.")
 
 
 if __name__ == "__main__":
