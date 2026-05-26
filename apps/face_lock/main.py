@@ -55,7 +55,7 @@ def main(args):
     print("Press 'q' to quit.")
 
     missing_frames = 0
-    LOCK_THRESHOLD = 15  # lock after 15 consecutive frames without the authorized face
+    LOCK_THRESHOLD = 3  # lock after 15 consecutive frames without the authorized face
     UNLOCK_THRESHOLD = 0.6  # cosine similarity threshold
     lock_enabled = True
     # Adaptive frame rate tiers for power efficiency
