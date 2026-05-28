@@ -13,13 +13,13 @@ class YuNetDetector:
     landmark format expected by the face-alignment pipeline.
     """
     DEFAULT_MODEL_URL = (
-        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
-        "face_detection_yunet_2023mar.onnx"
+        "https://github.com/ShiqiYu/libfacedetection.train/raw/master/onnx/"
+        "yunet_n_640_640.onnx"
     )
 
     def __init__(
         self,
-        model_path="models/yunet/face_detection_yunet_2023mar.onnx",
+        model_path="models/yunet/yunet_n_640_640.onnx",
         score_threshold=0.85,
         nms_threshold=0.3,
         top_k=5000,
@@ -45,15 +45,20 @@ class YuNetDetector:
             return
 
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+        filename = os.path.basename(self.model_path)
+        if "2023mar" in filename:
+            url = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+        else:
+            url = self.DEFAULT_MODEL_URL
+
         print(f"YuNet model not found locally. Downloading to {self.model_path} ...")
         try:
-            response = requests.get(self.DEFAULT_MODEL_URL, timeout=30)
+            response = requests.get(url, timeout=30)
             response.raise_for_status()
         except requests.RequestException as exc:
             raise RuntimeError(
                 "Unable to download the YuNet model automatically. "
-                "Please place face_detection_yunet_2023mar.onnx at "
-                f"{self.model_path}."
+                f"Please place the model file at {self.model_path}."
             ) from exc
 
         with open(self.model_path, "wb") as model_file:

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+import psutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,7 +27,8 @@ REPO_ROOT = APP_DIR.parents[1]
 DEFAULT_PTH_PATH = REPO_ROOT / "pretrained_models" / "ckpt_epoch_40.pth.tar"
 DEFAULT_ONNX_PATH = REPO_ROOT / "pretrained_models" / "model.onnx"
 DEFAULT_QUANT_PATH = APP_DIR / "models" / "model_quant.onnx"
-DEFAULT_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "face_detection_yunet_2023mar.onnx"
+DEFAULT_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "yunet_n_640_640.onnx"
+OLD_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "face_detection_yunet_2023mar.onnx"
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MB = 1024 * 1024
@@ -95,15 +97,15 @@ def parse_args():
     parser.add_argument("--quant-path", type=Path, default=DEFAULT_QUANT_PATH, help="Path to the quantized ONNX model.")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto", help="Primary device for original and ONNX variants.")
     parser.add_argument("--quant-device", choices=["same", "cpu", "cuda"], default="same", help="Inference device for the quantized ONNX variant.")
-    parser.add_argument("--gpu-index", type=int, default=0, help="GPU index for CUDA execution and nvidia-smi power sampling.")
-    parser.add_argument("--power-sample-ms", type=int, default=100, help="GPU power sampling interval in milliseconds.")
+    parser.add_argument("--gpu-index", type=int, default=0, help="GPU index for CUDA execution.")
     parser.add_argument("--backbone", type=str, default="auto", help="Backbone name for the original checkpoint. Use 'auto' to read the checkpoint arch field.")
     parser.add_argument("--feature-dim", type=int, default=512, help="Embedding size for the original model.")
     parser.add_argument("--input-size", type=int, default=112, help="Input height/width for face preprocessing.")
     parser.add_argument("--feat-bn", action=argparse.BooleanOptionalAction, default=True, help="Whether the original framework model uses feature batch norm.")
     parser.add_argument("--auto-quantize", action=argparse.BooleanOptionalAction, default=True, help="Create the quantized ONNX model automatically when it is missing.")
     parser.add_argument("--detector", choices=["yunet", "mtcnn"], default="yunet", help="Face detector backend to use during the practical benchmark.")
-    parser.add_argument("--detector-model", type=Path, default=DEFAULT_DETECTOR_MODEL, help="Path to the YuNet detector ONNX model.")
+    parser.add_argument("--detector-model", type=Path, default=None, help="Path to the YuNet detector ONNX model (defaults to new or old based on --old-detector).")
+    parser.add_argument("--old-detector", action="store_true", help="Use the old YuNet detector model (face_detection_yunet_2023mar.onnx).")
     parser.add_argument("--source", choices=["webcam", "images"], default="webcam", help="Frame source for the benchmark.")
     parser.add_argument("--image-dir", type=Path, default=None, help="Directory of benchmark frames when --source images is used.")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index when --source webcam is used.")
@@ -344,175 +346,22 @@ def measure_ram_added(load_func):
     return instance, max(0.0, after - before)
 
 
-class NvidiaSmiPowerSampler:
-    def __init__(self, gpu_index: int, interval_s: float):
-        self.gpu_index = gpu_index
-        self.interval_s = interval_s
-        self.samples = []
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self.available = self._probe()
-
-    def _probe(self):
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "-i",
-                    str(self.gpu_index),
-                    "--query-gpu=power.draw",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except (FileNotFoundError, subprocess.SubprocessError):
-            return False
-        return result.returncode == 0 and bool(result.stdout.strip())
-
-    def _read_power_w(self):
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "-i",
-                    str(self.gpu_index),
-                    "--query-gpu=power.draw",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except (FileNotFoundError, subprocess.SubprocessError):
-            return None
-
-        if result.returncode != 0:
-            return None
-
-        first_line = result.stdout.strip().splitlines()[0].strip()
-        try:
-            return float(first_line)
-        except ValueError:
-            return None
-
-    def _run(self):
-        while not self._stop.is_set():
-            power_w = self._read_power_w()
-            if power_w is not None:
-                self.samples.append(power_w)
-            time.sleep(self.interval_s)
-
-    def start(self):
-        if not self.available:
-            return
-        self.samples.clear()
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        if not self.available:
-            return
-        self._stop.set()
-        self._thread.join()
-
-    @property
-    def average_power_w(self):
-        if not self.samples:
-            return None
-        return float(np.mean(self.samples))
-
-
-def _iter_energy_samples(trace):
-    samples = getattr(trace, "samples", None)
-    if samples is None:
-        samples = getattr(trace, "_samples", None)
-    if samples is not None:
-        return list(samples)
-    try:
-        return list(trace)
-    except TypeError:
-        return []
-
-
-def _extract_total_energy_uj(trace):
-    total_energy_uj = 0.0
-    found_value = False
-    for sample in _iter_energy_samples(trace):
-        energy = getattr(sample, "energy", None)
-        if hasattr(energy, "items"):
-            for _, value in energy.items():
-                if isinstance(value, (int, float)):
-                    total_energy_uj += float(value)
-                    found_value = True
-        elif isinstance(energy, (int, float)):
-            total_energy_uj += float(energy)
-            found_value = True
-    return total_energy_uj if found_value else None
-
-
-def measure_pyjoules_cpu_power(run_callable):
+def measure_stage(stage_callable, gpu_index: int):
+    p = psutil.Process(os.getpid())
+    p.cpu_percent(interval=None)
     start = time.perf_counter()
 
-    if not sys.platform.startswith("linux"):
-        payload = run_callable()
-        elapsed_s = time.perf_counter() - start
-        return payload, elapsed_s, None, "pyJoules CPU RAPL is only available on Linux"
-
-    try:
-        from pyJoules.device import DeviceFactory
-        from pyJoules.device.rapl_device import RaplPackageDomain
-        from pyJoules.energy_meter import EnergyMeter
-    except ImportError:
-        payload = run_callable()
-        elapsed_s = time.perf_counter() - start
-        return payload, elapsed_s, None, "pyJoules not installed"
-
-    try:
-        devices = DeviceFactory.create_devices([RaplPackageDomain(0)])
-        meter = EnergyMeter(devices)
-    except Exception as exc:
-        payload = run_callable()
-        elapsed_s = time.perf_counter() - start
-        return payload, elapsed_s, None, f"pyJoules setup failed: {exc}"
-
-    payload = None
-    try:
-        meter.start(tag="benchmark")
-        payload = run_callable()
-        elapsed_s = time.perf_counter() - start
-        meter.stop()
-        trace = meter.get_trace()
-        total_energy_uj = _extract_total_energy_uj(trace)
-        if total_energy_uj is None or elapsed_s <= 0:
-            return payload, elapsed_s, None, "pyJoules returned no CPU energy samples"
-        avg_power_w = (total_energy_uj / 1_000_000.0) / elapsed_s
-        return payload, elapsed_s, avg_power_w, "pyJoules RaplPackageDomain(0)"
-    except Exception as exc:
-        elapsed_s = time.perf_counter() - start
-        if payload is None:
-            payload = run_callable()
-            elapsed_s = time.perf_counter() - start
-        return payload, elapsed_s, None, f"pyJoules measurement failed: {exc}"
-
-
-def measure_stage(stage_callable, power_device: str, gpu_index: int, power_sample_s: float):
-    if power_device == "cuda":
-        sampler = NvidiaSmiPowerSampler(gpu_index=gpu_index, interval_s=power_sample_s)
-        sampler.start()
-        start = time.perf_counter()
-        payload = stage_callable()
-        if torch.cuda.is_available():
+    payload = stage_callable()
+    if torch.cuda.is_available():
+        try:
             torch.cuda.synchronize(torch.device(f"cuda:{gpu_index}"))
-        elapsed_s = time.perf_counter() - start
-        sampler.stop()
-        return payload, elapsed_s, sampler.average_power_w, "nvidia-smi"
+        except:
+            pass
 
-    return measure_pyjoules_cpu_power(stage_callable)
+    elapsed_s = time.perf_counter() - start
+    cpu_usage = p.cpu_percent(interval=None)
+
+    return payload, elapsed_s, cpu_usage, "psutil"
 
 
 def create_detector(args):
@@ -742,13 +591,9 @@ def build_variant_runtimes(args, device: str, quant_device: str):
     }
 
 
-def benchmark_variant_stages(variant: VariantRuntime, frames, detector, args, power_sample_s: float):
+def benchmark_variant_stages(variant: VariantRuntime, frames, detector, args):
     stage_results = {}
     auth_embeddings = []
-    detector_power_device = "cpu"
-    detector_device = getattr(detector, "device", None)
-    if detector_device is not None and getattr(detector_device, "type", None) == "cuda":
-        detector_power_device = "cuda"
 
     for stage in STAGES:
         stage_frames = frames.face_frames if stage.label != "Locked" else frames.no_face_frames
@@ -756,11 +601,9 @@ def benchmark_variant_stages(variant: VariantRuntime, frames, detector, args, po
         def run_callable():
             return run_stage(stage, stage_frames, detector, variant.recognizer, auth_embeddings, args)
 
-        payload, elapsed_s, avg_power_w, power_source = measure_stage(
+        payload, elapsed_s, cpu_usage, measurement_source = measure_stage(
             run_callable,
-            power_device="cuda" if (variant.power_device == "cuda" or detector_power_device == "cuda") else "cpu",
             gpu_index=args.gpu_index,
-            power_sample_s=power_sample_s,
         )
 
         auth_embeddings = payload["auth_embeddings"]
@@ -768,8 +611,8 @@ def benchmark_variant_stages(variant: VariantRuntime, frames, detector, args, po
             "processing_ms": payload["processing_ms_mean"],
             "latency_ms": payload["latency_ms_mean"],
             "throughput_fps": (payload["frames_processed"] / elapsed_s) if elapsed_s > 0 else None,
-            "power_w": avg_power_w,
-            "power_source": power_source,
+            "cpu_usage": cpu_usage,
+            "measurement_source": measurement_source,
             "detections": payload["detections"],
             "recognition_calls": payload["recognition_calls"],
             "authorized_hits": payload["authorized_hits"],
@@ -814,7 +657,7 @@ def print_stage_table(stage_label, results_by_variant):
         ("Compute (ms)", "processing_ms"),
         ("Latency (ms)", "latency_ms"),
         ("Throughput (FPS)", "throughput_fps"),
-        ("Power (W)", "power_w"),
+        ("CPU Usage (%)", "cpu_usage"),
     ]
     for label, key in rows:
         print(
@@ -835,7 +678,7 @@ def print_variant_details(variants, stage_results):
         for stage in STAGES:
             result = stage_results[key][stage.label]
             print(
-                f"  {stage.label}: power={result['power_source']}, "
+                f"  {stage.label}: source={result['measurement_source']}, "
                 f"detections={result['detections']}/{result['frames_processed']}, "
                 f"recognitions={result['recognition_calls']}, "
                 f"authorized={result['authorized_hits']}"
@@ -844,6 +687,12 @@ def print_variant_details(variants, stage_results):
 
 def main():
     args = parse_args()
+    if args.detector_model is None:
+        if args.old_detector:
+            args.detector_model = OLD_DETECTOR_MODEL
+        else:
+            args.detector_model = DEFAULT_DETECTOR_MODEL
+
     args.pth_path = args.pth_path.resolve()
     args.onnx_path = args.onnx_path.resolve()
     args.quant_path = args.quant_path.resolve()
@@ -856,7 +705,6 @@ def main():
 
     device = resolve_device(args.device)
     quant_device = resolve_quant_device(args.quant_device, device)
-    power_sample_s = max(0.01, args.power_sample_ms / 1000.0)
 
     if not args.quant_path.exists():
         if not args.auto_quantize:
@@ -884,7 +732,7 @@ def main():
     stage_results = {}
     for key in ["original", "onnx", "quant"]:
         print(f"\nBenchmarking {variants[key].label} ...")
-        stage_results[key] = benchmark_variant_stages(variants[key], frames, detector, args, power_sample_s)
+        stage_results[key] = benchmark_variant_stages(variants[key], frames, detector, args)
 
     print_load_table(variants)
     for stage in STAGES:
@@ -901,9 +749,7 @@ def main():
     print("\nNotes:")
     if device == "cuda" or quant_device == "cuda":
         print(f"  Available ONNX Runtime providers: {ort.get_available_providers()}")
-        print("  CUDA power is sampled with nvidia-smi while each stage loop runs.")
-    else:
-        print("  CPU power uses pyJoules when available; otherwise Power (W) is reported as N/A.")
+    print("  CPU Usage (%) is measured using psutil.")
     print("  Stage metrics are mean values over the practical Face Lock pipeline for the collected shared frames.")
     if frames.synthetic_no_face_frames:
         print("  Locked-stage metrics used synthetic blank frames because the capture set contained no no-face samples.")

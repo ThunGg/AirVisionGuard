@@ -208,7 +208,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--detector-model",
         type=str,
-        default="models/yunet/face_detection_yunet_2023mar.onnx",
+        default="models/yunet/yunet_n_640_640.onnx",
         help="Path to the YuNet ONNX detector model file.",
     )
     args = parser.parse_args()

@@ -49,7 +49,7 @@ The app requires an ONNX face recognition model and a YuNet face detector model.
 
 ```
 Face recognition model: ../../models/face_rec.onnx
-YuNet detector model: models/yunet/face_detection_yunet_2023mar.onnx
+YuNet detector model: models/yunet/yunet_n_640_640.onnx
 ```
 
 (i.e., `<repo_root>/models/face_rec.onnx` for the recognition model, and `./models/yunet/` relative to the app directory for the detector).
@@ -70,7 +70,7 @@ python main.py [--model PATH_TO_MODEL] [--detector {yunet|mtcnn}] [--detector-mo
 |---|---|---|
 | `--model` | `../../models/face_rec.onnx` | Path to the ONNX face recognition model |
 | `--detector` | `yunet` | Face detector backend: `yunet` (faster on CPU) or `mtcnn` (GPU-accelerated) |
-| `--detector-model` | `models/yunet/face_detection_yunet_2023mar.onnx` | Path to the YuNet ONNX detector model file |
+| `--detector-model` | `models/yunet/yunet_n_640_640.onnx` | Path to the YuNet ONNX detector model file |
 
 ### Example
 
@@ -218,5 +218,5 @@ The MTCNN detector parameters (min face size, confidence thresholds, scale facto
 | `Error: Could not open camera` | Camera in use or wrong device index | Close other apps using the camera; change `cv2.VideoCapture(0)` index if needed |
 | Face not detected during registration | Poor lighting or face too small | Improve lighting; move closer to the camera |
 | Frequent false locks | Similarity threshold too strict or varied lighting | Lower `UNLOCK_THRESHOLD` or re-register under consistent lighting |
-| YuNet model download failed | No internet connection | Manually download from OpenCV Zoo and place at `models/yunet/face_detection_yunet_2023mar.onnx` |
+| YuNet model download failed | No internet connection | Manually download from libfacedetection.train and place at `models/yunet/yunet_n_640_640.onnx` |
 | High CPU usage | Using MTCNN on CPU (instead of YuNet) | Use default `--detector yunet` for better CPU performance |
