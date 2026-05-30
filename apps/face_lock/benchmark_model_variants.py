@@ -29,6 +29,12 @@ DEFAULT_ONNX_PATH = REPO_ROOT / "pretrained_models" / "model.onnx"
 DEFAULT_QUANT_PATH = APP_DIR / "models" / "model_quant.onnx"
 DEFAULT_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "yunet_n_640_640.onnx"
 OLD_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "face_detection_yunet_2023mar.onnx"
+STAGE2_DROPPED_DETECTOR_MODEL = APP_DIR / "models" / "yunet" / "face_detection_yunet_stage2_dropped.onnx"
+YUNET_VARIANT_MODELS = {
+    "default": DEFAULT_DETECTOR_MODEL,
+    "old": OLD_DETECTOR_MODEL,
+    "old-stage2-dropped": STAGE2_DROPPED_DETECTOR_MODEL,
+}
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MB = 1024 * 1024
@@ -104,8 +110,13 @@ def parse_args():
     parser.add_argument("--feat-bn", action=argparse.BooleanOptionalAction, default=True, help="Whether the original framework model uses feature batch norm.")
     parser.add_argument("--auto-quantize", action=argparse.BooleanOptionalAction, default=True, help="Create the quantized ONNX model automatically when it is missing.")
     parser.add_argument("--detector", choices=["yunet", "mtcnn"], default="yunet", help="Face detector backend to use during the practical benchmark.")
-    parser.add_argument("--detector-model", type=Path, default=None, help="Path to the YuNet detector ONNX model (defaults to new or old based on --old-detector).")
-    parser.add_argument("--old-detector", action="store_true", help="Use the old YuNet detector model (face_detection_yunet_2023mar.onnx).")
+    parser.add_argument("--detector-model", type=Path, default=None, help="Explicit path to the YuNet detector ONNX model. Overrides --yunet-variant when provided.")
+    parser.add_argument(
+        "--yunet-variant",
+        choices=list(YUNET_VARIANT_MODELS.keys()),
+        default="default",
+        help="Preset YuNet detector variant to use when --detector-model is not set.",
+    )
     parser.add_argument("--source", choices=["webcam", "images"], default="webcam", help="Frame source for the benchmark.")
     parser.add_argument("--image-dir", type=Path, default=None, help="Directory of benchmark frames when --source images is used.")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index when --source webcam is used.")
@@ -368,6 +379,14 @@ def create_detector(args):
     if args.detector == "mtcnn":
         return MTCNNDetector()
     return YuNetDetector(model_path=str(args.detector_model))
+
+
+def resolve_detector_model(args):
+    if args.detector != "yunet":
+        return None
+    if args.detector_model is not None:
+        return args.detector_model
+    return YUNET_VARIANT_MODELS[args.yunet_variant]
 
 
 def load_webcam_frames(args):
@@ -687,21 +706,32 @@ def print_variant_details(variants, stage_results):
 
 def main():
     args = parse_args()
-    if args.detector_model is None:
-        if args.old_detector:
-            args.detector_model = OLD_DETECTOR_MODEL
-        else:
-            args.detector_model = DEFAULT_DETECTOR_MODEL
 
     args.pth_path = args.pth_path.resolve()
     args.onnx_path = args.onnx_path.resolve()
     args.quant_path = args.quant_path.resolve()
-    args.detector_model = args.detector_model.resolve()
 
     if not args.pth_path.exists():
         raise FileNotFoundError(f"Original checkpoint not found: {args.pth_path}")
     if not args.onnx_path.exists():
         raise FileNotFoundError(f"ONNX model not found: {args.onnx_path}")
+
+    if args.detector == "yunet":
+        args.detector_model = resolve_detector_model(args).resolve()
+        if not args.detector_model.exists():
+            detector_label = (
+                "old-stage2-dropped YuNet"
+                if args.yunet_variant == "old-stage2-dropped"
+                else "old YuNet"
+                if args.yunet_variant == "old"
+                else "YuNet"
+            )
+            raise FileNotFoundError(
+                f"{detector_label} model not found: {args.detector_model}. "
+                "Provide the ONNX file at this path or pass --detector-model explicitly."
+            )
+    else:
+        args.detector_model = None
 
     device = resolve_device(args.device)
     quant_device = resolve_quant_device(args.quant_device, device)
