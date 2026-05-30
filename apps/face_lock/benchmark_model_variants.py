@@ -375,10 +375,13 @@ def measure_stage(stage_callable, gpu_index: int):
     return payload, elapsed_s, cpu_usage, "psutil"
 
 
-def create_detector(args):
+def create_detector(args, detector_model: Path | None = None):
     if args.detector == "mtcnn":
         return MTCNNDetector()
-    return YuNetDetector(model_path=str(args.detector_model))
+    model_path = detector_model if detector_model is not None else args.detector_model
+    if model_path is None:
+        raise RuntimeError("YuNet detector model path was not resolved.")
+    return YuNetDetector(model_path=str(model_path))
 
 
 def resolve_detector_model(args):
@@ -387,6 +390,14 @@ def resolve_detector_model(args):
     if args.detector_model is not None:
         return args.detector_model
     return YUNET_VARIANT_MODELS[args.yunet_variant]
+
+
+def resolve_bucket_detector_model(args):
+    if args.detector != "yunet":
+        return None
+    # Keep benchmark frame bucketing stable across YuNet variants so stage
+    # replay uses the same face/no-face mix for old and pruned detector runs.
+    return OLD_DETECTOR_MODEL
 
 
 def load_webcam_frames(args):
@@ -747,9 +758,14 @@ def main():
     cv2.setNumThreads(max(1, args.limit_opencv_threads))
 
     detector = create_detector(args)
+    bucket_detector_model = resolve_bucket_detector_model(args)
+    bucket_detector = detector
+    if bucket_detector_model is not None and bucket_detector_model != args.detector_model:
+        bucket_detector = create_detector(args, bucket_detector_model)
+        print(f"Using frame bucketing detector: {bucket_detector_model}")
     print(f"Collecting benchmark frames from {args.source} ...")
     raw_frames = load_benchmark_frames(args)
-    frames = bucket_frames_by_detection(raw_frames, detector, args)
+    frames = bucket_frames_by_detection(raw_frames, bucket_detector, args)
     print(
         f"Prepared {len(frames.face_frames)} face frames and {len(frames.no_face_frames)} no-face frames "
         f"for stage replay."
