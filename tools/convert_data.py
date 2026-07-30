@@ -2,15 +2,21 @@ import os
 import argparse
 import pickle
 import numpy as np
-if not hasattr(np, 'bool'):
-    np.bool = bool
-import mxnet as mx
 import cv2
 from tqdm import tqdm
 
+try:
+    from .mxnet_compat import import_mxnet
+except ImportError:
+    from mxnet_compat import import_mxnet
+
+mx = import_mxnet()
+
+
 def load_mx_rec(rec_path, save_path, write_img=True):
-    if not os.path.isdir(save_path + "/images"):
-        os.makedirs(save_path + "images")
+    image_root = os.path.join(save_path, "images")
+    if not os.path.isdir(image_root):
+        os.makedirs(image_root)
 
     imgrec = mx.recordio.MXIndexedRecordIO(
         os.path.join(rec_path, 'train.idx'),
@@ -25,24 +31,25 @@ def load_mx_rec(rec_path, save_path, write_img=True):
         label = int(header.label)
         filename = "{}/{}_{}.jpg".format(label, label, idx)
         out_list.append("{} {}\n".format(filename, label))
-        file_path = "{}/images/{}".format(save_path, label)
+        file_path = os.path.join(image_root, str(label))
         if write_img:
             if not os.path.isdir(file_path):
                 os.makedirs(file_path)
-            cv2.imwrite('{}/images/{}'.format(save_path, filename), img)
+            cv2.imwrite(os.path.join(image_root, filename), img)
     with open(os.path.join(save_path, "list.txt"), 'w') as f:
         f.writelines(out_list)
 
 
 def load_bin(path, rootdir, image_size=[112,112]):
-    if not os.path.isdir(rootdir + "/images"):
-        os.makedirs(rootdir + "/images")
+    image_root = os.path.join(rootdir, "images")
+    if not os.path.isdir(image_root):
+        os.makedirs(image_root)
     bins, issame_list = pickle.load(open(path, 'rb'), encoding='bytes')
     for i in range(len(bins)):
         _bin = bins[i]
         img = mx.image.imdecode(_bin).asnumpy()
         img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
-        cv2.imwrite("{}/images/{}.jpg".format(rootdir, i), img)
+        cv2.imwrite(os.path.join(image_root, "{}.jpg".format(i)), img)
     np.save('{}/issame_list.npy'.format(rootdir), np.array(issame_list))
 
 def main():

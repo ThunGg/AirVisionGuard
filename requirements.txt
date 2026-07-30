@@ -11,6 +11,7 @@ tqdm
 matplotlib
 tensorboardX
 onnx
+ml_dtypes>=0.5.0
 onnxruntime-gpu
 psutil
 onnxscript
