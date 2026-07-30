@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .ext_layers import ArcFullyConnected
 from . import backbones
 
@@ -26,12 +27,14 @@ class KDLoss(nn.Module):
     """Knowledge distillation loss for embeddings.
 
     Supports 'cosine' (1 - cos_sim) and 'mse' (Mean Squared Error).
+    Optionally normalizes embeddings before computing loss.
     Optionally scales embeddings by a temperature before computing loss.
     """
-    def __init__(self, loss_type='cosine', temperature=1.0):
+    def __init__(self, loss_type='cosine', temperature=1.0, normalize_features=True):
         super(KDLoss, self).__init__()
         self.loss_type = loss_type
         self.temperature = temperature
+        self.normalize_features = normalize_features
         if loss_type == 'cosine':
             self.criterion = nn.CosineEmbeddingLoss(reduction='mean')
         elif loss_type == 'mse':
@@ -40,6 +43,10 @@ class KDLoss(nn.Module):
             raise ValueError("Unknown KD loss type: {}".format(loss_type))
 
     def forward(self, student_feat, teacher_feat):
+        if self.normalize_features:
+            student_feat = F.normalize(student_feat, p=2, dim=1)
+            teacher_feat = F.normalize(teacher_feat, p=2, dim=1)
+
         if self.temperature != 1.0:
             student_feat = student_feat / self.temperature
             teacher_feat = teacher_feat / self.temperature
@@ -55,10 +62,19 @@ class KDLoss(nn.Module):
 class MultiTaskWithLoss(nn.Module):
     def __init__(self, backbone, num_classes, feature_dim, spatial_size,
                  arc_fc=False, feat_bn=False, s=64, m=0.5, is_pw=True,
-                 is_hard=False, loss_type='crossentropy', kd_config=None):
+                 is_hard=False, loss_type='crossentropy', scale=None,
+                 backbone_kwargs=None, kd_config=None):
         super(MultiTaskWithLoss, self).__init__()
         self.feat_bn = feat_bn
-        self.basemodel = backbones.__dict__[backbone](feature_dim=feature_dim, spatial_size=spatial_size)
+
+        # Prepare student backbone kwargs
+        b_kwargs = backbone_kwargs.copy() if backbone_kwargs is not None else {}
+        if scale is not None:
+            b_kwargs['scale'] = scale
+
+        self.basemodel = backbones.__dict__[backbone](
+            feature_dim=feature_dim, spatial_size=spatial_size, **b_kwargs)
+        
         if feat_bn:
             self.bn1d = nn.BatchNorm1d(feature_dim, affine=False, eps=2e-5, momentum=0.9)
         
@@ -76,19 +92,26 @@ class MultiTaskWithLoss(nn.Module):
             teacher_backbone = kd_config['teacher_backbone']
             teacher_feature_dim = kd_config.get('teacher_feature_dim', feature_dim)
             teacher_input_size = kd_config.get('teacher_input_size', spatial_size)
+            teacher_scale = kd_config.get('teacher_scale', None)
+            teacher_b_kwargs = kd_config.get('teacher_backbone_kwargs', {}).copy()
+            if teacher_scale is not None:
+                teacher_b_kwargs['scale'] = teacher_scale
+
             temperature = kd_config.get('temperature', 1.0)
+            normalize_features = kd_config.get('normalize_features', True)
 
             # Build frozen teacher backbone
             self.teacher_model = backbones.__dict__[teacher_backbone](
-                feature_dim=teacher_feature_dim, spatial_size=teacher_input_size)
+                feature_dim=teacher_feature_dim, spatial_size=teacher_input_size, **teacher_b_kwargs)
             self.teacher_feat_bn = None
             if feat_bn:
                 self.teacher_feat_bn = nn.BatchNorm1d(
                     teacher_feature_dim, affine=False, eps=2e-5, momentum=0.9)
 
             # Load teacher checkpoint
-            teacher_ckpt_path = kd_config['teacher_checkpoint']
-            self._load_teacher_weights(teacher_ckpt_path)
+            teacher_ckpt_path = kd_config.get('teacher_checkpoint', '')
+            if teacher_ckpt_path and str(teacher_ckpt_path).strip().lower() not in ['', 'none', 'null']:
+                self._load_teacher_weights(teacher_ckpt_path)
 
             # Freeze teacher completely
             self.teacher_model.requires_grad_(False)
@@ -103,8 +126,10 @@ class MultiTaskWithLoss(nn.Module):
                 self.kd_projection = nn.Linear(feature_dim, teacher_feature_dim, bias=False)
 
             # KD loss
-            self.kd_criterion = KDLoss(loss_type=kd_config.get('loss_type', 'cosine'), 
-                                       temperature=temperature)
+            self.kd_criterion = KDLoss(
+                loss_type=kd_config.get('loss_type', 'cosine'), 
+                temperature=temperature,
+                normalize_features=normalize_features)
 
         if num_classes is not None:
             self.num_tasks = len(num_classes)

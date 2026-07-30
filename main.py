@@ -317,6 +317,19 @@ def main():
     if args.evaluate or args.extract:
         args.num_classes = None
 
+    def argobj_to_dict(obj):
+        if obj is None:
+            return {}
+        if isinstance(obj, dict):
+            return obj
+        if hasattr(obj, '__dict__'):
+            return {k: argobj_to_dict(v) for k, v in obj.__dict__.items()}
+        return obj
+
+    # Parse student model scale and backbone kwargs
+    student_scale = getattr(args.model, 'scale', None)
+    student_b_kwargs = argobj_to_dict(getattr(args.model, 'backbone_kwargs', {}))
+
     # Parse knowledge distillation config
     kd_config = None
     if hasattr(args, 'knowledge_distillation'):
@@ -327,20 +340,25 @@ def main():
             'teacher_checkpoint': getattr(kd_obj, 'teacher_checkpoint', ''),
             'teacher_feature_dim': getattr(kd_obj, 'teacher_feature_dim', args.model.feature_dim),
             'teacher_input_size': getattr(kd_obj, 'teacher_input_size', args.model.input_size),
+            'teacher_scale': getattr(kd_obj, 'teacher_scale', None),
+            'teacher_backbone_kwargs': argobj_to_dict(getattr(kd_obj, 'teacher_backbone_kwargs', {})),
             'alpha': getattr(kd_obj, 'alpha', 1.0),
             'beta': getattr(kd_obj, 'beta', 0.5),
             'temperature': getattr(kd_obj, 'temperature', 1.0),
             'loss_type': getattr(kd_obj, 'loss_type', 'cosine'),
+            'normalize_features': getattr(kd_obj, 'normalize_features', True),
         }
         if kd_config['enabled']:
-            log("Knowledge Distillation ENABLED: teacher={}, alpha={}, beta={}, temperature={}, loss_type={}".format(
-                kd_config['teacher_backbone'], kd_config['alpha'], kd_config['beta'], kd_config['temperature'], kd_config['loss_type']))
+            log("Knowledge Distillation ENABLED: teacher={} (scale={}), student={} (scale={}), alpha={}, beta={}, temperature={}, loss_type={}".format(
+                kd_config['teacher_backbone'], kd_config['teacher_scale'], args.model.backbone, student_scale,
+                kd_config['alpha'], kd_config['beta'], kd_config['temperature'], kd_config['loss_type']))
 
     model = models.MultiTaskWithLoss(
         backbone=args.model.backbone, num_classes=args.num_classes,
         feature_dim=args.model.feature_dim, spatial_size=args.model.input_size,
         arc_fc=args.model.arc_fc, feat_bn=args.model.feat_bn,
         loss_type=getattr(args.model, 'loss_type', 'crossentropy'),
+        scale=student_scale, backbone_kwargs=student_b_kwargs,
         kd_config=kd_config)
     
     if args.distributed:
@@ -553,9 +571,12 @@ def train(train_loader, model, optimizer, epoch, loss_weight, tb_logger, count, 
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         
+        scale_before = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
-        lr_scheduler.step()
+        scale_after = scaler.get_scale()
+        if scale_before <= scale_after:
+            lr_scheduler.step()
 
         for k in range(num_tasks):
             if torch.__version__ >= '1.1.0':

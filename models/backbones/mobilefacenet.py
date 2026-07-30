@@ -90,30 +90,33 @@ class MobileFaceNet(Module):
     def __init__(self, feature_dim=512, blocks=(1, 4, 6, 2), scale=2, **kwargs):
         super(MobileFaceNet, self).__init__()
         self.scale = scale
+        c64 = int(64 * self.scale)
+        c128 = int(128 * self.scale)
+
         self.layers = nn.ModuleList()
         self.layers.append(
-            ConvBlock(3, 64 * self.scale, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
+            ConvBlock(3, c64, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
         )
         if blocks[0] == 1:
             self.layers.append(
-                ConvBlock(64 * self.scale, 64 * self.scale, kernel=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+                ConvBlock(c64, c64, kernel=(3, 3), stride=(1, 1), padding=(1, 1), groups=c64)
             )
         else:
             self.layers.append(
-                Residual(64 * self.scale, num_block=blocks[0], groups=128, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
+                Residual(c64, num_block=blocks[0], groups=c64 * 2, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
             )
         
         self.layers.extend(
         [
-            DepthWise(64 * self.scale, 64 * self.scale, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=128),
-            Residual(64 * self.scale, num_block=blocks[1], groups=128, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
-            DepthWise(64 * self.scale, 128 * self.scale, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=256),
-            Residual(128 * self.scale, num_block=blocks[2], groups=256, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
-            DepthWise(128 * self.scale, 128 * self.scale, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=512),
-            Residual(128 * self.scale, num_block=blocks[3], groups=256, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
+            DepthWise(c64, c64, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=c64 * 2),
+            Residual(c64, num_block=blocks[1], groups=c64 * 2, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
+            DepthWise(c64, c128, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=c64 * 4),
+            Residual(c128, num_block=blocks[2], groups=c128 * 2, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
+            DepthWise(c128, c128, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=c128 * 4),
+            Residual(c128, num_block=blocks[3], groups=c128 * 2, kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
         ])
 
-        self.conv_sep = ConvBlock(128 * self.scale, 512, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
+        self.conv_sep = ConvBlock(c128, 512, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
         self.features = GDC(feature_dim)
         self._initialize_weights()
 
@@ -139,8 +142,8 @@ class MobileFaceNet(Module):
         return x
 
 
-def mobilefacenet(**kwargs):
-    return MobileFaceNet(blocks=(1, 4, 6, 2), scale=2, **kwargs)
+def mobilefacenet(scale=2, **kwargs):
+    return MobileFaceNet(blocks=(1, 4, 6, 2), scale=scale, **kwargs)
 
-def mobilefacenet_large(**kwargs):
-    return MobileFaceNet(blocks=(2, 8, 12, 4), scale=4, **kwargs)
+def mobilefacenet_large(scale=4, **kwargs):
+    return MobileFaceNet(blocks=(2, 8, 12, 4), scale=scale, **kwargs)

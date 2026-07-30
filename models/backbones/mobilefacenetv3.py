@@ -298,11 +298,11 @@ class MobileFaceNetV3(Module):
 # ---------------------------------------------------------------------------
 # Factory functions (match the convention used by the rest of the framework)
 # ---------------------------------------------------------------------------
-def mobilefacenetv3(**kwargs):
+def mobilefacenetv3(scale=2, **kwargs):
     """MobileFaceNetV3-Small — comparable capacity to mobilefacenet."""
-    return MobileFaceNetV3(blocks=(1, 4, 6, 2), scale=2, **kwargs)
+    return MobileFaceNetV3(blocks=(1, 4, 6, 2), scale=scale, **kwargs)
 
 
-def mobilefacenetv3_large(**kwargs):
+def mobilefacenetv3_large(scale=4, **kwargs):
     """MobileFaceNetV3-Large — higher capacity variant."""
-    return MobileFaceNetV3(blocks=(2, 8, 12, 4), scale=4, **kwargs)
+    return MobileFaceNetV3(blocks=(2, 8, 12, 4), scale=scale, **kwargs)

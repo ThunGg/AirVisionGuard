@@ -1,0 +1,66 @@
+workers: 4
+gpus: '0' # GPU selection (e.g. '0' or '0,1')
+memcached: False
+memcached_client: ""
+
+model:
+    backbone: 'mobilefacenet'
+    scale: 1.5                                  # Student width multiplier: 1.5 -> 0.75x MBF (96 base channels)
+    feature_dim: 512
+    arc_fc: True
+    feat_bn: True
+    input_size: 112
+    loss_type: 'crossentropy'                   # Options: 'crossentropy', 'focal'
+
+knowledge_distillation:
+    enabled: true                               # Set to true to enable KD
+    teacher_backbone: 'mobilefacenet'           # Teacher architecture
+    teacher_scale: 2.0                          # Teacher width multiplier: 2.0 -> 1.0x MBF (128 base channels)
+    teacher_checkpoint: 'pretrained_models/mbf_1.0_webface.pth.tar'  # Path to pre-trained teacher checkpoint
+    teacher_feature_dim: 512                    # Teacher embedding dimension
+    teacher_input_size: 112                     # Teacher input resolution
+    alpha: 1.0                                  # Weight for student task loss: L = alpha*L_task + beta*L_kd
+    beta: 0.5                                   # Weight for KD embedding loss
+    temperature: 1.0                            # Temperature scaling
+    loss_type: 'cosine'                         # Options: 'cosine', 'mse'
+    normalize_features: true                    # Perform L2 normalization on feature embeddings before KD loss
+
+train:
+    rand_seed: 0
+    batch_size: [128]
+    loss_weight: [1.0]
+    base_lr: 0.1
+    min_lr: 0.0001
+    max_epoch: 40
+    warmup_epochs: 5
+    warmup_start_factor: 0.1
+    momentum: 0.9
+    weight_decay: 0.0005
+    print_freq: 100
+    average_stats: 1000
+    data_root:
+        - 'data/webface/images'
+    data_list:
+        - 'data/webface/list.txt'
+
+val:
+    flag: False
+    batch_size: [128]
+    data_root: 
+    data_list: 
+    data_meta:
+
+test:
+    flag: True
+    initial_test: True
+    interval: 1
+    test_root: 'data/webface'
+    benchmark: ['lfw', 'cfp_ff', 'cfp_fp', 'agedb_30', 'calfw', 'cplfw']
+    batch_size: 128
+    nfolds: 10
+
+extract_info:
+    batch_size: 128
+    data_name: ''
+    data_root: ''
+    data_list: ''

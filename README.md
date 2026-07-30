@@ -121,6 +121,44 @@ python main.py --config experiments/webface/res50-bs64-sz224-ep35/config.yaml \
 
 The extracted features will be saved as a `.bin` file in the specified location.
 
+---
+
+## 🧠 Knowledge Distillation (KD)
+
+The framework supports Knowledge Distillation to transfer feature representation knowledge from a larger teacher model to a smaller student model (e.g., MobileFaceNet 1.0x $\rightarrow$ MobileFaceNet 0.75x).
+
+### Configuration Parameters
+
+Add a `knowledge_distillation` section to your `config.yaml`:
+
+```yaml
+model:
+    backbone: 'mobilefacenet'
+    scale: 1.5                                  # Student width multiplier (e.g. 1.5 -> 0.75x MBF)
+    feature_dim: 512
+
+knowledge_distillation:
+    enabled: true                               # Enable Knowledge Distillation
+    teacher_backbone: 'mobilefacenet'           # Teacher architecture
+    teacher_scale: 2.0                          # Teacher width multiplier (e.g. 2.0 -> 1.0x MBF)
+    teacher_checkpoint: 'pretrained_models/mbf_1.0_webface.pth.tar' # Path to teacher checkpoint
+    teacher_feature_dim: 512                    # Teacher embedding dimension
+    teacher_input_size: 112                     # Teacher input resolution
+    alpha: 1.0                                  # Weight for student task loss: L = alpha*L_task + beta*L_kd
+    beta: 0.5                                   # Weight for KD loss
+    temperature: 1.0                            # Temperature scaling factor
+    loss_type: 'cosine'                         # Distance metric: 'cosine' or 'mse'
+    normalize_features: true                    # L2-normalize feature embeddings before KD loss
+```
+
+### Running KD Training (MobileFaceNet 1.0x $\rightarrow$ 0.75x)
+
+```bash
+python main.py --config experiments/webface/mbf-0.75-kd/config.yaml
+```
+
+---
+
 ## 📝 Citation
 
 If you use this framework in your research, please cite the underlying work. See [CITATION.cff](CITATION.cff) for details.
